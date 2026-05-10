@@ -56,8 +56,8 @@ class VoiceSystem:
             pa.terminate()
         return devices
 
-    def listen_for_wake_word(self):
-        """Blocks until wake trigger is detected (voice keyword and/or clap)."""
+    def listen_for_wake_word(self, on_level=None):
+        """Blocks until wake trigger is detected. Optionally calls on_level with audio energy."""
         keyword = self.system_cfg.get("wake_word", "jarvis")
         access_key = self.system_cfg.get("picovoice_key")
         keyword_wake_enabled = bool(self.voice_cfg.get("enable_keyword_wake", True))
@@ -113,10 +113,14 @@ class VoiceSystem:
                         print("[JARVIS] Wake word detected!")
                         return True
 
-                if use_clap:
+                if use_clap or on_level:
                     peak = max(abs(sample) for sample in pcm_unpacked)
+                    # Broadcast level to UI
+                    if on_level:
+                        on_level(peak)
+                    
                     now = time.time()
-                    if peak >= clap_threshold and (now - last_clap_ts) >= clap_cooldown_s:
+                    if use_clap and peak >= clap_threshold and (now - last_clap_ts) >= clap_cooldown_s:
                         clap_hits.append(now)
                         last_clap_ts = now
                         clap_hits = [t for t in clap_hits if now - t <= clap_window_s]

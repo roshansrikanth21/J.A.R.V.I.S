@@ -24,6 +24,7 @@ class JarvisEngine:
         self.listening_enabled = True
         self.event_queue = asyncio.Queue()
         self.loop = None
+        self.tasks = [] # Track real-time tasks
 
     def emit_event(self, event_type, message):
         """Emits a normalized WebSocket event payload to the async queue."""
@@ -45,6 +46,10 @@ class JarvisEngine:
             payload = {"type": "transcription", "text": message, "message": message}
         elif event_type == "response":
             payload = {"type": "llm_response", "text": message, "message": message}
+        elif event_type == "audio_level":
+            payload = {"type": "audio_level", "level": message}
+        elif event_type == "tasks_update":
+            payload = {"type": "tasks", "tasks": self.get_tasks()}
 
         asyncio.run_coroutine_threadsafe(self.event_queue.put(payload), self.loop)
 
@@ -52,6 +57,12 @@ class JarvisEngine:
         """Processes a text command manually (e.g. from UI)"""
         self.emit_event("status", f"Processing: {command_text}")
         
+        # Track as an active task
+        self.add_task(f"Exec: {command_text}", eta="now")
+        if self.tasks:
+            self.tasks[0]["status"] = "active"
+            self.emit_event("tasks_update", "Task activated")
+
         intent = self.brain.parse_intent(command_text)
         action = intent.get("action", "chat")
         
@@ -99,10 +110,34 @@ class JarvisEngine:
         self.emit_event("response", response_text)
         self.memory.remember(f"User: {command_text}\nJARVIS: {response_text}")
         
+        # Mark current task as done
+        if len(self.tasks) > 0 and self.tasks[0]["status"] == "active":
+            done_task = self.tasks.pop(0)
+            done_task["status"] = "done"
+            done_task["at"] = time.strftime("%H:%M")
+            self.tasks.append(done_task)
+            self.emit_event("tasks_update", "Task completed")
+
         # Speak the response in a separate thread so it doesn't block the UI
         threading.Thread(target=self.voice.speak, args=(response_text,), daemon=True).start()
         
         return response_text
+
+    def get_tasks(self):
+        """Returns the task list formatted for the UI."""
+        return self.tasks[-10:] # Return last 10 tasks
+
+    def add_task(self, title, eta=""):
+        """Adds a new task to the queue."""
+        task = {
+            "id": int(time.time()),
+            "t": title,
+            "eta": eta,
+            "status": "queued",
+            "at": time.strftime("%H:%M")
+        }
+        self.tasks.insert(0, task)
+        self.emit_event("tasks_update", "Task added")
 
     def _voice_loop(self):
         """The main blocking voice loop running in a background thread."""
@@ -115,7 +150,7 @@ class JarvisEngine:
                     continue
 
                 # 1. Listen for Wake Word
-                self.voice.listen_for_wake_word()
+                self.voice.listen_for_wake_word(on_level=lambda level: self.emit_event("audio_level", level))
                 self.emit_event("status", "Wake Word detected! Listening...")
                 
                 # 2. Record command

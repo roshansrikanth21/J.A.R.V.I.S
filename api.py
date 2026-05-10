@@ -3,6 +3,7 @@ import yaml
 import asyncio
 import json
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
@@ -11,6 +12,15 @@ from jarvis.engine import JarvisEngine
 import uvicorn
 
 app = FastAPI(title="J.A.R.V.I.S. Web OS")
+
+# Add CORS middleware to allow the UI to communicate with the backend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, specify the exact origin
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # We will mount the built React UI at the end so it doesn't shadow API routes.
 
@@ -147,7 +157,10 @@ async def websocket_endpoint(websocket: WebSocket):
             active_connections.remove(websocket)
 
 # Mount the React UI
-if os.path.exists("ui/dist"):
+# TanStack Start builds into ui/dist/client
+if os.path.exists("ui/dist/client"):
+    app.mount("/", StaticFiles(directory="ui/dist/client", html=True), name="ui")
+elif os.path.exists("ui/dist"):
     app.mount("/", StaticFiles(directory="ui/dist", html=True), name="ui")
 else:
     @app.get("/")

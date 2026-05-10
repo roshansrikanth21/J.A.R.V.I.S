@@ -1,0 +1,32 @@
+system:
+  name: "JARVIS"
+  wake_word: "jarvis"
+  picovoice_key: "YOUR_PICOVOICE_KEY" # Get from console.picovoice.ai
+
+voice:
+  stt_model: "base"
+  stt_device: "cpu"
+  stt_compute_type: "int8"
+  tts_model_path: "en_US-lessac-high.onnx"
+  input_device_index: null
+  enable_clap_wake: true
+  enable_keyword_wake: true
+  clap_threshold: 12000
+  clap_count_required: 2
+  clap_window_s: 1.2
+  clap_cooldown_s: 0.25
+
+brain:
+  primary_llm: "local" # 'local' or 'cloud'
+  local_model: "llama3.1:8b-instruct-q4_K_M"
+  cloud_model: "claude-3-5-sonnet-20240620"
+  anthropic_api_key: "YOUR_ANTHROPIC_KEY"
+  
+memory:
+  db_path: "./memory/chroma_db"
+  embedding_model: "all-MiniLM-L6-v2"
+
+apps:
+  chrome: "C:/Program Files/Google/Chrome/Application/chrome.exe"
+  notepad: "notepad.exe"
+  spotify: "spotify.exe"

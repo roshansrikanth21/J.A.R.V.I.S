@@ -36,3 +36,10 @@ build/
 # OS
 .DS_Store
 Thumbs.db
+
+# J.A.R.V.I.S. Local State
+config.yaml
+memory/
+ui/dist/
+ui/dist-ssr/
+.tempmediaStorage/
