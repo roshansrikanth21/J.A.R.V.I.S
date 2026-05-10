@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+.env
+*.log
+*.pickle
+
+# Secrets and Tokens
+token.json
+credentials.json
+.secrets
+.env*
+*.key
+*.pem
+*.p12
+*.cer
+*.crt
+*.pub
+*.token
+
+# Node
+node_modules/
+dist/
+build/
+.next/
+
+# Large files
+*.zip
+*.tar.gz
+*.rar
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,57 @@
+================================================================================
+J.A.R.V.I.S. / E.D.I.T.H. Build Logs & Prompt History
+================================================================================
+
+--------------------------------------------------------------------------------
+[PROMPT 1]
+"hey ,ok look i wabt to make a ai like edith and jarvis from spiderman which is like very knoledgebale and smar enough to handle and uderstand context and make and do stuff on its own ,it should act more like a companion rather than just a agent ,it should be able to prompt ,copy pste promts from a givn file to other applications ,open appliucationns close applications ,speak and aso understand speech to text and text to speech ,as well as use word vectorization to understand hwat im trying to say i want accuracy and speed like of the actual alexa,i have a alexa echo dot gen 4 i can also use its hardware tell me what i have to do i have all the componenets i just want a secondary brain i can rely on also it should be able to see my screen use other ai applications as well as models ,should also be offline compatible tell me exatly what i have to do i want all these and much more"
+
+[WORK DONE]
+- Analyzed the hardware (RTX 3050 4GB) and offline requirements.
+- Developed an initial implementation plan for a Python-based custom assistant.
+- Designed the architecture to use `faster-whisper` (int8) for STT, `Ollama` for local LLMs, ChromaDB for vector memory, PyAutoGUI for PC control, and `mss` for screen capture.
+--------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------
+[PROMPT 2]
+"Here's your full JARVIS build guide — click through the phases inside it... The 6-phase build order: Voice Core first — wake word (Porcupine), STT (faster-whisper), TTS (Piper)... Brain... Action Engine... Screen Vision... Alexa Echo Dot Gen 4... Personality + HUD... 
+is there any skeletonn or framwork that is almost confirguable just sour the internet and guthub for such skeletons and use th ebest one"
+
+[WORK DONE]
+- Searched GitHub for existing "offline python voice assistant" frameworks.
+- Determined that existing internet skeletons were too bloated and didn't match the highly specific, modern stack requested in the HTML guide.
+- Created a fully custom, modular skeleton from scratch (`engine.py`, `config.yaml`, `voice.py`, `brain.py`, `actions.py`, `memory.py`, `vision.py`).
+- Implemented the 6-phase guide directly into the codebase.
+--------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------
+[PROMPT 3]
+"so i have added a lot of zip files that i found from github use this as the skeleton and import whatevers needed and look into the files properly and go throiught all the folder and zip files to undertsand whats happening and use them"
+
+[WORK DONE]
+- Extracted 6 ZIP files (J.A.R.V.I.S-main, EDITH-voice-assistant, etc.) provided by the user.
+- Analyzed the legacy code inside the repositories.
+- Extracted the most useful hardcoded functions (WhatsApp via pywhatkit, YouTube playback, NewsAPI fetching, System shutdown/restart).
+- Created `jarvis/tools/system_tools.py` to house these legacy functions.
+- Updated the LLM `brain.py` schema to dynamically recognize intents for WhatsApp, YouTube, News, and Power Controls.
+- Wired the new tools into `jarvis/engine.py`.
+- Cleaned up the extracted temporary zip folders.
+--------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------
+[PROMPT 4]
+"also put my promts like whatever im typeing to you in a clean txt file and mention the sequencce of work ,i want it like logs so tht i can backtrack and understand what was happening"
+
+[WORK DONE]
+- Compiled this `build_logs.txt` file to document the entire prompt history and sequence of development steps for easy backtracking.
+--------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------
+[PROMPT 5]
+"let the wake word be jarvis or edith and just run all the commands that have to be run"
+
+[WORK DONE]
+- Updated config.yaml to use the built-in "jarvis" wake word instead of looking for a custom .ppn file.
+- Updated oice.py to correctly map the keywords parameter for pvporcupine to the built-in list.
+- Attempted to auto-run the environment setup (python -m venv, pip install, ollama pull), but execution failed because Python and Ollama are not globally mapped to the PATH of this terminal session. User must run them natively.
+--------------------------------------------------------------------------------
