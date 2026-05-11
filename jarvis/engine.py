@@ -19,12 +19,14 @@ class JarvisEngine:
         self.actions = ActionEngine(config)
         self.brain = Brain(config, self.memory)
         self.github_tools = GitHubTools(self.voice)
+        self.agent_tools = self._build_agent_tools()
         
         self.is_running = False
         self.listening_enabled = True
         self.event_queue = asyncio.Queue()
         self.loop = None
         self.tasks = [] # Track real-time tasks
+        self.agent_trace = []
 
     def emit_event(self, event_type, message):
         """Emits a normalized WebSocket event payload to the async queue."""
@@ -38,7 +40,7 @@ class JarvisEngine:
         if event_type == "status":
             payload = {
                 "type": "state",
-                "status": "speaking" if str(message).lower().startswith("processing:") else "listening",
+                "status": "speaking" if str(message).lower().startswith(("processing:", "speaking:")) else "listening",
                 "text": message,
                 "message": message,
             }
@@ -50,6 +52,8 @@ class JarvisEngine:
             payload = {"type": "audio_level", "level": message}
         elif event_type == "tasks_update":
             payload = {"type": "tasks", "tasks": self.get_tasks()}
+        elif event_type == "agent_tool":
+            payload = {"type": "agent_tool", "step": message}
 
         asyncio.run_coroutine_threadsafe(self.event_queue.put(payload), self.loop)
 
@@ -81,7 +85,7 @@ class JarvisEngine:
             
         elif action == "vision":
             self.emit_event("status", "Looking at screen...")
-            analysis = self.vision.ask_about_screen()
+            analysis = self.vision.ask_about_screen(command_text)
             response_text = self.brain.ask(f"The screen shows: {analysis}. The user asked: {command_text}")
             
         elif action == "send_whatsapp":
@@ -105,7 +109,11 @@ class JarvisEngine:
             response_text = result
             
         else:
-            response_text = self.brain.ask(command_text)
+            response_text = self.brain.run_agent(
+                command_text,
+                tools=self.agent_tools,
+                on_step=self._record_agent_step,
+            )
             
         self.emit_event("response", response_text)
         self.memory.remember(f"User: {command_text}\nJARVIS: {response_text}")
@@ -118,14 +126,86 @@ class JarvisEngine:
             self.tasks.append(done_task)
             self.emit_event("tasks_update", "Task completed")
 
-        # Speak the response in a separate thread so it doesn't block the UI
-        threading.Thread(target=self.voice.speak, args=(response_text,), daemon=True).start()
+        # Speak the response in a separate thread so it doesn't block the UI.
+        threading.Thread(target=self._speak_response, args=(response_text,), daemon=True).start()
         
         return response_text
+
+    def _speak_response(self, response_text):
+        self.emit_event("status", "Speaking: response audio")
+        try:
+            self.voice.speak(response_text)
+        finally:
+            self.emit_event("status", "Listening")
 
     def get_tasks(self):
         """Returns the task list formatted for the UI."""
         return self.tasks[-10:] # Return last 10 tasks
+
+    def _build_agent_tools(self):
+        """Combines reasoning tools with safe PC/action tools."""
+        tools = self.brain.default_tools()
+        configured_apps = ", ".join(sorted(self.config.get("apps", {}).keys())) or "none"
+
+        tools.update(
+            {
+                "open_app": {
+                    "description": f"Open a configured desktop app. Available app names: {configured_apps}.",
+                    "args_schema": {"app_name": "string"},
+                    "handler": lambda args: self.actions.open_app(args.get("app_name", "")),
+                },
+                "paste_prompt": {
+                    "description": "Paste a prompt file from the prompts directory into the active window.",
+                    "args_schema": {"prompt_name": "string without .txt"},
+                    "handler": lambda args: self.actions.paste_prompt_file(args.get("prompt_name", "")),
+                },
+                "look_at_screen": {
+                    "description": "Capture and analyze the current screen when visual context is needed.",
+                    "args_schema": {"question": "string"},
+                    "handler": lambda args: self.vision.ask_about_screen(
+                        args.get("question", "What is on the screen right now?")
+                    ),
+                },
+                "play_youtube": {
+                    "description": "Open YouTube and play a requested video or search query.",
+                    "args_schema": {"query": "string"},
+                    "handler": lambda args: self.github_tools.play_youtube(args.get("query", "")),
+                },
+                "get_news": {
+                    "description": "Fetch the latest top news headlines.",
+                    "args_schema": {},
+                    "handler": lambda args: self.github_tools.get_news(),
+                },
+            }
+        )
+        return tools
+
+    def _record_agent_step(self, step):
+        self.agent_trace.append(step)
+        self.agent_trace = self.agent_trace[-25:]
+        self.emit_event("agent_tool", step)
+        self.emit_event("status", f"Tool: {step['action']} -> {step['observation'][:120]}")
+
+    def get_agent_status(self):
+        """Returns UI-facing agent capability and runtime state."""
+        return {
+            "brain": {
+                "primary_llm": self.brain.primary_llm,
+                "local_model": self.brain.local_model,
+                "max_agent_steps": self.brain.max_agent_steps,
+                "use_llm_intent_router": self.brain.use_llm_intent_router,
+            },
+            "memory": self.memory.stats() if self.memory else {"available": False, "count": 0},
+            "tools": self.brain.tool_manifest(self.agent_tools),
+            "tasks": self.get_tasks(),
+            "trace": self.agent_trace,
+            "safety": {
+                "bounded_steps": True,
+                "power_actions_in_agent_loop": False,
+                "tool_protocol": "json",
+                "human_confirmation_required_for_power": True,
+            },
+        }
 
     def add_task(self, title, eta=""):
         """Adds a new task to the queue."""

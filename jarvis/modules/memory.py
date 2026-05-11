@@ -64,3 +64,13 @@ class MemorySystem:
         except Exception as e:
             print(f"[WARN] Recall failed: {e}")
             return []
+
+    def stats(self):
+        """Returns lightweight memory health information for the UI."""
+        if not self.collection:
+            return {"available": False, "count": 0}
+
+        try:
+            return {"available": True, "count": self.collection.count()}
+        except Exception as e:
+            return {"available": False, "count": 0, "error": str(e)}

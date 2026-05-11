@@ -110,6 +110,10 @@ async def get_voice_settings():
         }
     }
 
+@app.get("/api/agent/status")
+async def agent_status():
+    return engine.get_agent_status()
+
 @app.put("/api/settings/voice")
 async def update_voice_settings(payload: VoiceSettingsUpdate):
     updated_voice = {

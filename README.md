@@ -2,6 +2,41 @@
 
 A fully offline-capable, highly modular AI assistant built for Windows. It features wake word detection, local STT (faster-whisper), local LLM (Ollama), local TTS (Piper), PC control (PyAutoGUI), and vector memory (ChromaDB).
 
+## Current Agent Core
+
+J.A.R.V.I.S. now includes a bounded autonomous agent loop inspired by the sense-think-act design in `deep-research-report.md`.
+
+- Uses local Ollama by default and injects relevant ChromaDB memory.
+- Plans with a strict JSON tool protocol instead of brittle free-form action text.
+- Can call safe tools for time, calculator, memory recall/save, web search, weather, screen analysis, opening configured apps, prompt pasting, YouTube, and news.
+- Keeps power actions (`shutdown`, `restart`, `logout`) on the explicit intent path only, so the autonomous loop cannot trigger them by accident.
+- Limits autonomy with `brain.max_agent_steps` in `config.yaml`; `brain.use_llm_intent_router` can be enabled if you want the old LLM-based pre-router, but it is off by default for speed.
+
+## Command Deck UI
+
+The web UI is now a minimal professional command deck adapted from the `jarvis-ui-dashboard` direction. It shows the real backend state: voice link, terminal stream, task queue, tool registry, memory health, safety kernel, and autonomous agent trace.
+
+Recommended desktop mode:
+```powershell
+.\start-jarvis-desktop.ps1
+```
+
+That builds the UI, opens the Electron desktop app, starts the FastAPI backend automatically, and loads the local command deck. To stop stale backend/frontend listeners and relaunch everything:
+```powershell
+.\restart-jarvis.ps1
+```
+
+Run it during browser development:
+```powershell
+cd ui
+npm run dev -- --host 127.0.0.1 --port 8080
+```
+
+Run the backend API in another shell when you want live commands:
+```powershell
+.\venv\Scripts\python.exe api.py
+```
+
 ## Setup Instructions
 
 ### 1. Prerequisites
