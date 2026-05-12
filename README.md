@@ -16,17 +16,7 @@ J.A.R.V.I.S. now includes a bounded autonomous agent loop inspired by the sense-
 
 The web UI is now a minimal professional command deck adapted from the `jarvis-ui-dashboard` direction. It shows the real backend state: voice link, terminal stream, task queue, tool registry, memory health, safety kernel, and autonomous agent trace.
 
-Recommended desktop mode:
-```powershell
-.\start-jarvis-desktop.ps1
-```
-
-That builds the UI, opens the Electron desktop app, starts the FastAPI backend automatically, and loads the local command deck. To stop stale backend/frontend listeners and relaunch everything:
-```powershell
-.\restart-jarvis.ps1
-```
-
-Run it during browser development:
+Run it during development:
 ```powershell
 cd ui
 npm run dev -- --host 127.0.0.1 --port 8080
