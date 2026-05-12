@@ -1,8 +1,0 @@
-requests
-wikipedia
-pywhatkit
-pyttsx3
-SpeechRecognition
-pyaudio
-webbrowser
-datetime
