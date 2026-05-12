@@ -20,12 +20,13 @@ class VoiceSystem:
         self.input_device_index = self.voice_cfg.get("input_device_index")
         
         # Initialize STT
-        print("[JARVIS] Initializing faster-whisper...")
+        print(f"[JARVIS] Initializing faster-whisper on {self.voice_cfg.get('stt_device', 'cpu')}...")
         self.stt_model = WhisperModel(
             self.voice_cfg.get("stt_model", "base"),
-            device=self.voice_cfg.get("stt_device", "cuda"),
+            device=self.voice_cfg.get("stt_device", "cpu"),
             compute_type=self.voice_cfg.get("stt_compute_type", "int8")
         )
+        print("[JARVIS] Voice system ready.")
         self.recognizer = sr.Recognizer()
         print("[JARVIS] Voice system initialized.")
 

@@ -16,8 +16,12 @@ class MemorySystem:
         print("[JARVIS] Initializing memory embeddings...")
         
         try:
+            import chromadb.config
             self.embed_model = SentenceTransformer(model_name)
-            self.client = chromadb.PersistentClient(path=db_path)
+            self.client = chromadb.PersistentClient(
+                path=db_path,
+                settings=chromadb.config.Settings(anonymized_telemetry=False)
+            )
             self.collection = self.client.get_or_create_collection("jarvis_memories")
         except Exception as e:
             print(f"[WARN] Memory init failed: {e}")

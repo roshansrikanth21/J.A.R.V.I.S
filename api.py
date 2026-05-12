@@ -8,8 +8,12 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
-from jarvis.engine import JarvisEngine
 import uvicorn
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(message)s")
+logger = logging.getLogger("uvicorn.error")
 
 app = FastAPI(title="J.A.R.V.I.S. Web OS")
 
@@ -40,8 +44,10 @@ if not os.path.exists("config.yaml"):
 with open("config.yaml", "r") as f:
     config = yaml.safe_load(f)
 
-# Engine initialization
+# Engine initialization - This might take a moment
+print("[JARVIS] Booting Engine modules...")
 engine = JarvisEngine(config)
+print("[JARVIS] Engine modules loaded.")
 
 # Connected WebSocket clients
 active_connections = []
@@ -112,7 +118,14 @@ async def get_voice_settings():
 
 @app.get("/api/agent/status")
 async def agent_status():
-    return engine.get_agent_status()
+    try:
+        return engine.get_agent_status()
+    except Exception as e:
+        return {"error": str(e), "status": "initializing"}
+
+@app.get("/health")
+async def health_check():
+    return {"status": "ok", "ready": True}
 
 @app.put("/api/settings/voice")
 async def update_voice_settings(payload: VoiceSettingsUpdate):

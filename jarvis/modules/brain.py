@@ -255,6 +255,11 @@ class Brain:
                 "args_schema": {"location": "string"},
                 "handler": lambda args: self._tool_weather_live(args.get("location", "")),
             },
+            "read_url": {
+                "description": "Read the text content of a webpage to answer questions.",
+                "args_schema": {"url": "string"},
+                "handler": lambda args: self._tool_read_url(args.get("url", "")),
+            },
         }
 
     def tool_manifest(self, tools=None):
@@ -411,6 +416,30 @@ User request: {query}
             return response.text.strip()
         except Exception as e:
             return f"Weather lookup failed: {e}"
+
+    def _tool_read_url(self, url):
+        url = str(url).strip()
+        if not url:
+            return "No URL provided."
+        if requests is None:
+            return "URL reading is unavailable because requests is not installed."
+        try:
+            from bs4 import BeautifulSoup
+            # Add a user-agent to avoid basic blocks
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) JARVIS/1.0"}
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, "html.parser")
+            # Remove script and style elements
+            for script in soup(["script", "style"]):
+                script.extract()
+            text = soup.get_text(separator=' ')
+            # Collapse whitespace
+            text = re.sub(r'\s+', ' ', text).strip()
+            # Return first 3000 chars to avoid overwhelming the LLM
+            return text[:3000]
+        except Exception as e:
+            return f"Failed to read URL: {e}"
 
     def _truncate(self, text, limit):
         text = str(text or "")
