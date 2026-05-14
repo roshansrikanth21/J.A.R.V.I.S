@@ -1,6 +1,6 @@
 from jarvis.modules.voice import VoiceSystem
 from jarvis.modules.brain import Brain
-from jarvis.modules.memory import MemorySystem
+from jarvis.modules.memory.enhanced_memory import JarvisMemoryManager
 from jarvis.modules.actions import ActionEngine
 from jarvis.modules.vision import VisionSystem
 from jarvis.tools.system_tools import GitHubTools
@@ -13,7 +13,7 @@ class JarvisEngine:
         self.config = config
         
         # Initialize modules
-        self.memory = MemorySystem(config)
+        self.memory = JarvisMemoryManager()
         self.voice = VoiceSystem(config)
         self.vision = VisionSystem(config)
         self.actions = ActionEngine(config)
@@ -21,12 +21,19 @@ class JarvisEngine:
         self.github_tools = GitHubTools(self.voice)
         self.agent_tools = self._build_agent_tools()
         
+        # ── Listeners & Background tasks ─────────────────────────────────────
         self.is_running = False
         self.listening_enabled = True
         self.event_queue = asyncio.Queue()
         self.loop = None
-        self.tasks = [] # Track real-time tasks
+        self.tasks = []
         self.agent_trace = []
+        self._threads = []
+        
+        # Start global hotkey listener
+        self._start_hotkey_listener()
+        # Start proactive monitoring
+        self._start_proactive_monitor()
 
     def emit_event(self, event_type, message):
         """Emits a normalized WebSocket event payload to the async queue."""
@@ -324,8 +331,54 @@ class JarvisEngine:
         """Starts the voice detection loop in a background thread."""
         self.loop = loop
         self.is_running = True
-        self.thread = threading.Thread(target=self._voice_loop, daemon=True)
-        self.thread.start()
+        t = threading.Thread(target=self._voice_loop, daemon=True)
+        t.start()
+        self._threads.append(t)
+
+    def _start_hotkey_listener(self):
+        """Background listener for global hotkeys."""
+        try:
+            import keyboard
+            def on_hotkey():
+                print("[HOTKEY] Summoned!")
+                # We can't easily trigger the blocking voice loop's wake word logic,
+                # so we might need a flag or a direct call.
+                # For now, let's just emit a status event.
+                self.emit_event("status", "Summoned via hotkey! Listening...")
+
+            keyboard.add_hotkey('ctrl+alt+j', on_hotkey)
+            print("[SYSTEM] Hotkey Ctrl+Alt+J registered.")
+        except Exception as e:
+            print(f"[ERROR] Could not register hotkey: {e}")
+
+    def _start_proactive_monitor(self):
+        """Runs background checks for system health and briefings."""
+        def monitor():
+            last_suggestion_time = 0
+            last_stats_time = 0
+            while self.is_running:
+                time.sleep(10) # check more frequently for timing logic
+                
+                now = time.time()
+                # Memory Stats every 2 mins
+                if now - last_stats_time > 120:
+                    stats = self.memory.get_stats()
+                    self.emit_event("memory_stats", stats)
+                    last_stats_time = now
+
+                # Proactive Suggestions every 30 mins
+                if now - last_suggestion_time > 1800:
+                    suggestion = self.memory.get_proactive_suggestion()
+                    if suggestion:
+                        self.emit_event("proactive_event", {"text": suggestion})
+                        self.add_task("Proactive Suggestion", eta="completed")
+                    last_suggestion_time = now
+
+                # Generic system health/scan logic could be expanded here
+
+        t = threading.Thread(target=monitor, daemon=True)
+        t.start()
+        self._threads.append(t)
 
     def set_listening(self, enabled: bool):
         self.listening_enabled = enabled

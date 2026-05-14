@@ -1,372 +1,393 @@
 """
-J.A.R.V.I.S HUD Overlay
-========================
-PyQt6 always-on-top transparent desktop overlay.
-
-Features:
-  - Arc-reactor status ring (idle / listening / thinking / speaking)
-  - Live transcript + response feed (last 4 exchanges)
-  - Real-time system stats: CPU, RAM, GPU (via pynvml if available)
-  - WebSocket client — receives events from the JARVIS FastAPI backend
-  - System tray icon with show/hide/quit menu
-  - Draggable — click-drag anywhere to reposition
-  - Snaps to bottom-right on first launch
+J.A.R.V.I.S Voice HUD — Side Panel
+====================================
+Slides in from the right edge when JARVIS activates.
+Auto-hides after 5s of idle. Lives in system tray.
 """
-
-import sys
-import json
-import time
-import math
-import threading
-
+import sys, json, random
 import psutil
+
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QSystemTrayIcon, QMenu,
+    QLabel, QScrollArea, QSystemTrayIcon, QMenu,
 )
 from PyQt6.QtCore import (
-    Qt, QTimer, QThread, pyqtSignal, QPoint, QRectF,
+    Qt, QTimer, QThread, pyqtSignal, QPoint,
+    QPropertyAnimation, QEasingCurve, QRectF,
 )
 from PyQt6.QtGui import (
-    QPainter, QPen, QColor, QBrush, QFont,
-    QRadialGradient, QPainterPath, QIcon, QAction,
-    QPixmap, QLinearGradient, QFontDatabase,
+    QPainter, QPen, QColor, QBrush, QLinearGradient,
+    QRadialGradient, QPainterPath, QIcon, QAction, QPixmap,
 )
 
-# ── Optional GPU stats via pynvml ────────────────────────────────────────────
 try:
-    import pynvml
-    pynvml.nvmlInit()
-    _GPU_HANDLE = pynvml.nvmlDeviceGetHandleByIndex(0)
-    _GPU_AVAILABLE = True
+    import pynvml; pynvml.nvmlInit()
+    _GPU = pynvml.nvmlDeviceGetHandleByIndex(0); _GPU_OK = True
 except Exception:
-    _GPU_AVAILABLE = False
+    _GPU_OK = False
 
-# ── Colour palette ────────────────────────────────────────────────────────────
-C_BG          = QColor(8,   10,  24,  210)   # deep navy, mostly opaque
-C_BORDER      = QColor(0,   180, 255,  80)   # cyan border, subtle
-C_ACCENT      = QColor(0,   212, 255, 255)   # bright cyan
-C_AMBER       = QColor(255, 160,  20, 255)   # thinking / active
-C_GREEN       = QColor( 50, 255, 120, 255)   # speaking
-C_DIM         = QColor( 60,  70, 100, 180)   # idle dim
-C_TEXT        = QColor(200, 220, 255, 255)   # primary text
-C_SUBTEXT     = QColor(100, 130, 170, 200)   # secondary text
-C_USER_BUBBLE = QColor( 30,  40,  80, 160)
-C_BOT_BUBBLE  = QColor( 15,  25,  50, 160)
+# ── Palette ──────────────────────────────────────────────────────────────────
+C_BG       = QColor( 6,  9, 22, 225)
+C_ACCENT   = QColor( 0,210,255,255)
+C_AMBER    = QColor(255,160, 20,255)
+C_GREEN    = QColor( 40,220,100,255)
+C_DIM      = QColor( 50, 65,100,180)
+C_BORDER   = QColor( 0,180,255, 55)
+C_TEXT     = QColor(200,220,255,255)
+C_SUB      = QColor( 90,120,160,200)
 
-HUD_W, HUD_H = 400, 310
-RING_R        = 22   # status ring radius
+W, H       = 380, 600
+RING_R     = 18
+AUTO_HIDE  = 6000   # ms before panel slides out
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# WebSocket worker thread
-# ─────────────────────────────────────────────────────────────────────────────
+# ── WebSocket worker ─────────────────────────────────────────────────────────
 class WSWorker(QThread):
-    """Connects to the JARVIS backend WebSocket and emits Qt signals."""
-    event_received = pyqtSignal(dict)
-    connection_status = pyqtSignal(str)   # "connected" | "disconnected"
+    ev   = pyqtSignal(dict)
+    conn = pyqtSignal(str)
 
-    def __init__(self, url="ws://localhost:8000/ws"):
-        super().__init__()
-        self.url = url
-        self._running = True
+    def __init__(self, url):
+        super().__init__(); self.url = url; self._go = True
 
     def run(self):
         import asyncio, websockets
-
-        async def listen():
-            while self._running:
+        async def _loop():
+            while self._go:
                 try:
-                    self.connection_status.emit("connecting")
+                    self.conn.emit("connecting")
                     async with websockets.connect(self.url, ping_interval=20) as ws:
-                        self.connection_status.emit("connected")
-                        while self._running:
+                        self.conn.emit("connected")
+                        while self._go:
                             try:
-                                raw = await asyncio.wait_for(ws.recv(), timeout=2.0)
-                                data = json.loads(raw)
-                                self.event_received.emit(data)
+                                self.ev.emit(json.loads(await asyncio.wait_for(ws.recv(), 2)))
                             except asyncio.TimeoutError:
-                                continue
+                                pass
                 except Exception:
-                    self.connection_status.emit("disconnected")
-                    await asyncio.sleep(3)   # retry in 3s
+                    self.conn.emit("disconnected")
+                    await asyncio.sleep(3)
+        asyncio.run(_loop())
 
-        asyncio.run(listen())
-
-    def stop(self):
-        self._running = False
+    def stop(self): self._go = False
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Stats poller thread
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Stats worker ─────────────────────────────────────────────────────────────
 class StatsWorker(QThread):
-    stats_ready = pyqtSignal(dict)
-
+    ready = pyqtSignal(dict)
     def run(self):
+        prev_net = psutil.net_io_counters()
         while True:
-            cpu  = psutil.cpu_percent(interval=1)
-            ram  = psutil.virtual_memory().percent
-            gpu  = self._gpu()
-            self.stats_ready.emit({"cpu": cpu, "ram": ram, "gpu": gpu})
+            gpu = None
+            if _GPU_OK:
+                try: gpu = pynvml.nvmlDeviceGetUtilizationRates(_GPU).gpu
+                except: pass
+            
+            # Calculate net speed
+            curr_net = psutil.net_io_counters()
+            sent = (curr_net.bytes_sent - prev_net.bytes_sent) / 1024
+            recv = (curr_net.bytes_recv - prev_net.bytes_recv) / 1024
+            prev_net = curr_net
+            
+            # Battery
+            batt = psutil.sensors_battery()
+            batt_pct = batt.percent if batt else None
+            
+            self.ready.emit({
+                "cpu": psutil.cpu_percent(interval=1),
+                "ram": psutil.virtual_memory().percent,
+                "gpu": gpu,
+                "net": (sent, recv),
+                "batt": batt_pct
+            })
 
-    def _gpu(self):
-        if not _GPU_AVAILABLE:
-            return None
-        try:
-            util = pynvml.nvmlDeviceGetUtilizationRates(_GPU_HANDLE)
-            return util.gpu
-        except Exception:
-            return None
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Arc Reactor ring widget
-# ─────────────────────────────────────────────────────────────────────────────
-class ReactorRing(QWidget):
-    """Animated arc-reactor style status indicator."""
-
+# ── Waveform widget ───────────────────────────────────────────────────────────
+class Waveform(QWidget):
+    N = 28
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedSize(RING_R * 2 + 16, RING_R * 2 + 16)
-        self.state  = "idle"       # idle | listening | thinking | speaking
-        self._angle = 0
-        self._pulse = 0.0
-        self._pulse_dir = 1
+        super().__init__(parent); self.setFixedHeight(50)
+        self._bars    = [0.05] * self.N
+        self._targets = [0.05] * self.N
+        self._active  = False
+        t = QTimer(self); t.timeout.connect(self._tick); t.start(45)
 
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._tick)
-        self._timer.start(30)
-
-    def set_state(self, state: str):
-        self.state = state
-        self.update()
+    def set_active(self, v):
+        self._active = v
 
     def _tick(self):
-        self._angle = (self._angle + 4) % 360
-        self._pulse += 0.06 * self._pulse_dir
-        if self._pulse >= 1.0 or self._pulse <= 0.0:
-            self._pulse_dir *= -1
+        for i in range(self.N):
+            self._targets[i] = random.uniform(0.15, 1.0) if self._active else 0.04
+            self._bars[i] += (self._targets[i] - self._bars[i]) * 0.28
         self.update()
 
     def paintEvent(self, _):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        bw  = (self.width() - (self.N - 1) * 3) / self.N
+        h   = self.height()
+        for i, v in enumerate(self._bars):
+            bh  = max(3, v * h * 0.88)
+            x   = i * (bw + 3)
+            y   = (h - bh) / 2
+            col = QColor(C_ACCENT if self._active else C_DIM)
+            col.setAlpha(int(80 + 170 * v) if self._active else 60)
+            p.setBrush(QBrush(col)); p.setPen(Qt.PenStyle.NoPen)
+            p.drawRoundedRect(QRectF(x, y, bw, bh), bw / 2, bw / 2)
 
+
+# ── Reactor ring ─────────────────────────────────────────────────────────────
+class Ring(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent); self.setFixedSize(RING_R*2+14, RING_R*2+14)
+        self.state = "idle"; self._a = 0; self._p = 0.0; self._pd = 1
+        t = QTimer(self); t.timeout.connect(self._tick); t.start(28)
+
+    def set_state(self, s): self.state = s
+
+    def _tick(self):
+        self._a  = (self._a + 5) % 360
+        self._p += 0.07 * self._pd
+        if self._p >= 1 or self._p <= 0: self._pd *= -1
+        self.update()
+
+    def paintEvent(self, _):
+        p  = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
         cx = self.width()  // 2
         cy = self.height() // 2
         r  = RING_R
+        col = {"listening": C_ACCENT, "thinking": C_AMBER,
+               "speaking":  C_GREEN,  "idle":     C_DIM}[self.state]
 
-        # State colour
-        if self.state == "listening":
-            base_col = C_ACCENT
-        elif self.state == "thinking":
-            base_col = C_AMBER
-        elif self.state == "speaking":
-            base_col = C_GREEN
-        else:
-            base_col = C_DIM
+        g = QRadialGradient(cx, cy, r + 6)
+        gc = QColor(col); gc.setAlpha(int(50 + 40 * self._p))
+        g.setColorAt(0, gc); g.setColorAt(1, QColor(0,0,0,0))
+        p.setBrush(QBrush(g)); p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(cx-r-6, cy-r-6, (r+6)*2, (r+6)*2)
 
-        # Outer glow radial gradient
-        glow = QRadialGradient(cx, cy, r + 8)
-        gc   = QColor(base_col)
-        gc.setAlpha(int(60 + 50 * self._pulse))
-        glow.setColorAt(0, gc)
-        glow.setColorAt(1, QColor(0, 0, 0, 0))
-        p.setBrush(QBrush(glow))
-        p.setPen(Qt.PenStyle.NoPen)
-        p.drawEllipse(cx - r - 8, cy - r - 8, (r + 8) * 2, (r + 8) * 2)
+        p.setBrush(QBrush(QColor(8,12,28,200)))
+        p.setPen(QPen(QColor(col.red(),col.green(),col.blue(),50), 1.2))
+        p.drawEllipse(cx-r, cy-r, r*2, r*2)
 
-        # Background circle
-        p.setBrush(QBrush(QColor(10, 15, 30, 200)))
-        p.setPen(QPen(QColor(base_col.red(), base_col.green(), base_col.blue(), 60), 1.5))
-        p.drawEllipse(cx - r, cy - r, r * 2, r * 2)
-
-        # Spinning arc (hidden when idle)
         if self.state != "idle":
-            arc_col = QColor(base_col)
-            arc_col.setAlpha(220)
-            pen = QPen(arc_col, 3)
-            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            p.setPen(pen)
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            span  = 240 if self.state == "thinking" else 120
-            rect  = QRectF(cx - r + 2, cy - r + 2, (r - 2) * 2, (r - 2) * 2)
-            p.drawArc(rect, -self._angle * 16, -span * 16)
+            pen = QPen(QColor(col), 2.5); pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setPen(pen); p.setBrush(Qt.BrushStyle.NoBrush)
+            span = 260 if self.state == "thinking" else 130
+            p.drawArc(QRectF(cx-r+2, cy-r+2, (r-2)*2, (r-2)*2),
+                      -self._a*16, -span*16)
 
-        # Inner dot
-        inner_col = QColor(base_col)
-        inner_col.setAlpha(int(160 + 80 * self._pulse))
-        p.setBrush(QBrush(inner_col))
-        p.setPen(Qt.PenStyle.NoPen)
-        p.drawEllipse(cx - 5, cy - 5, 10, 10)
+        dc = QColor(col); dc.setAlpha(int(140+100*self._p))
+        p.setBrush(QBrush(dc)); p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(cx-4, cy-4, 8, 8)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Main HUD Window
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Main HUD panel ────────────────────────────────────────────────────────────
 class JarvisHUD(QWidget):
-
     def __init__(self, ws_url="ws://localhost:8000/ws"):
         super().__init__()
-
-        # Window flags: frameless, transparent, always on top, tool window
         self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.WindowStaysOnTopHint |
+            Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFixedSize(HUD_W, HUD_H)
+        self.setFixedSize(W, H)
 
-        # ── State ──────────────────────────────────────────────────────────
-        self._drag_pos    = QPoint()
-        self._state       = "idle"
-        self._status_text = "System ready."
-        self._transcript  = []      # list of {"role": "user"|"jarvis", "text": str}
-        self._tool_step   = ""
-        self._ws_status   = "disconnected"
-        self._stats       = {"cpu": 0.0, "ram": 0.0, "gpu": None}
+        self._pinned       = False
+        self._state        = "idle"
+        self._trace        = []        # agent steps
+        self._tasks        = []        # mission board
+        self._session_start = __import__("time").time()
+        self._step_count   = 0
+        self._mem_count    = 0
+        self._model_name   = "llama3.1:8b"
+        self._stats        = {}
+        self._drag_pos     = QPoint()
+        self._visible_out  = True      # starts shown, slides in on first event
 
-        # ── Build UI ───────────────────────────────────────────────────────
+        # ── auto-hide timer ──────────────────────────────────────────────────
+        self._hide_timer = QTimer(self)
+        self._hide_timer.setSingleShot(True)
+        self._hide_timer.timeout.connect(self._slide_out)
+
+        # ── slide animation ──────────────────────────────────────────────────
+        self._anim = QPropertyAnimation(self, b"pos")
+        self._anim.setDuration(320)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
         self._build_ui()
-        self._snap_to_corner()
         self._setup_tray()
+        self._position_offscreen()
+        self.show()
+        self._slide_in()
 
-        # ── Workers ────────────────────────────────────────────────────────
+        # workers
         self._ws = WSWorker(ws_url)
-        self._ws.event_received.connect(self._on_event)
-        self._ws.connection_status.connect(self._on_ws_status)
+        self._ws.ev.connect(self._on_event)
+        self._ws.conn.connect(self._on_conn)
         self._ws.start()
 
-        self._stats_worker = StatsWorker()
-        self._stats_worker.stats_ready.connect(self._on_stats)
-        self._stats_worker.start()
+        self._sw = StatsWorker()
+        self._sw.ready.connect(self._on_stats)
+        self._sw.start()
 
-    # ── Snap to bottom-right ───────────────────────────────────────────────
-    def _snap_to_corner(self):
-        screen = QApplication.primaryScreen().availableGeometry()
-        self.move(screen.right() - HUD_W - 16, screen.bottom() - HUD_H - 16)
+        # session clock
+        self._clock = QTimer(self)
+        self._clock.timeout.connect(self._update_session_label)
+        self._clock.start(1000)
 
-    # ── UI construction ────────────────────────────────────────────────────
+    # ── Layout ────────────────────────────────────────────────────────────────
     def _build_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(8)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 14, 16, 14)
+        root.setSpacing(0)
 
-        # ── Header row ──────────────────────────────────────────────────
-        header = QHBoxLayout()
-        header.setSpacing(10)
+        # — Header ————————————————————————————————————————————————————————
+        hdr = QHBoxLayout(); hdr.setSpacing(10)
+        self._ring = Ring(self)
+        hdr.addWidget(self._ring, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        self._ring = ReactorRing(self)
-        header.addWidget(self._ring, 0, Qt.AlignmentFlag.AlignVCenter)
+        title_col = QVBoxLayout(); title_col.setSpacing(1)
+        t = QLabel("J·A·R·V·I·S")
+        t.setStyleSheet("color:#00d4ff;font-size:13px;font-weight:700;"
+                        "letter-spacing:3px;background:transparent;")
+        self._conn_lbl = QLabel("○ CONNECTING")
+        self._conn_lbl.setStyleSheet("color:#404870;font-size:8px;"
+                                     "letter-spacing:2px;background:transparent;")
+        title_col.addWidget(t); title_col.addWidget(self._conn_lbl)
+        hdr.addLayout(title_col)
+        hdr.addStretch()
 
-        title_col = QVBoxLayout()
-        title_col.setSpacing(2)
-        self._title_lbl = QLabel("J.A.R.V.I.S")
-        self._title_lbl.setStyleSheet(
-            "color: #00d4ff; font-size: 15px; font-weight: 700; "
-            "letter-spacing: 3px; background: transparent;"
+        # pin button
+        self._pin_btn = QLabel("📌")
+        self._pin_btn.setStyleSheet("color:#303850;font-size:14px;"
+                                    "background:transparent;cursor:pointer;")
+        self._pin_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._pin_btn.mousePressEvent = lambda _: self._toggle_pin()
+        hdr.addWidget(self._pin_btn, 0, Qt.AlignmentFlag.AlignTop)
+        root.addLayout(hdr)
+        root.addSpacing(10)
+        root.addWidget(self._hr())
+
+        # — Waveform ——————————————————————————————————————————————————————
+        root.addSpacing(6)
+        self._wave = Waveform()
+        root.addWidget(self._wave)
+
+        # — Transcript ————————————————————————————————————————————————————
+        root.addSpacing(6)
+        self._user_lbl = QLabel("")
+        self._user_lbl.setWordWrap(True)
+        self._user_lbl.setStyleSheet(
+            "color:#c0d8ff;font-size:14px;font-weight:600;background:transparent;"
         )
-        self._ws_lbl = QLabel("◉ CONNECTING...")
-        self._ws_lbl.setStyleSheet(
-            "color: #404870; font-size: 9px; letter-spacing: 2px; background: transparent;"
+        self._user_lbl.setMaximumWidth(W - 36)
+        root.addWidget(self._user_lbl)
+        root.addSpacing(4)
+        root.addWidget(self._hr())
+        root.addSpacing(4)
+
+        # — Agent trace ———————————————————————————————————————————————————
+        trace_hdr = QLabel("  AGENT TRACE")
+        trace_hdr.setStyleSheet("color:#2a4060;font-size:8px;letter-spacing:2px;"
+                                "background:transparent;")
+        root.addWidget(trace_hdr)
+        root.addSpacing(2)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFixedHeight(120)
+        scroll.setStyleSheet(
+            "QScrollArea{background:transparent;border:none;}"
+            "QScrollBar:vertical{width:4px;background:transparent;}"
+            "QScrollBar::handle:vertical{background:#1a3050;border-radius:2px;}"
         )
-        title_col.addWidget(self._title_lbl)
-        title_col.addWidget(self._ws_lbl)
-        header.addLayout(title_col)
+        self._trace_inner = QWidget()
+        self._trace_inner.setStyleSheet("background:transparent;")
+        self._trace_layout = QVBoxLayout(self._trace_inner)
+        self._trace_layout.setContentsMargins(0, 0, 0, 0)
+        self._trace_layout.setSpacing(2)
+        self._trace_layout.addStretch()
+        scroll.setWidget(self._trace_inner)
+        root.addWidget(scroll)
+        self._trace_scroll = scroll
 
-        header.addStretch()
+        root.addSpacing(4)
+        root.addWidget(self._hr())
+        root.addSpacing(4)
 
-        # System stats (vertical stack, right-aligned)
-        stats_col = QVBoxLayout()
-        stats_col.setSpacing(1)
-        self._cpu_lbl = self._stat_label("CPU 0%")
-        self._ram_lbl = self._stat_label("RAM 0%")
-        self._gpu_lbl = self._stat_label("GPU --")
-        stats_col.addWidget(self._cpu_lbl)
-        stats_col.addWidget(self._ram_lbl)
-        stats_col.addWidget(self._gpu_lbl)
-        header.addLayout(stats_col)
+        # — Mission Board (Tasks) —————————————————————————————————————————
+        mission_hdr = QLabel("  MISSION STATUS")
+        mission_hdr.setStyleSheet("color:#2a4060;font-size:8px;letter-spacing:2px;"
+                                   "background:transparent;")
+        root.addWidget(mission_hdr)
+        root.addSpacing(2)
 
-        layout.addLayout(header)
+        self._task_container = QWidget()
+        self._task_container.setStyleSheet("background:transparent;")
+        self._task_layout = QVBoxLayout(self._task_container)
+        self._task_layout.setContentsMargins(0, 0, 0, 0)
+        self._task_layout.setSpacing(3)
+        root.addWidget(self._task_container)
 
-        # ── Divider ──────────────────────────────────────────────────────
-        layout.addWidget(self._divider())
+        root.addSpacing(4)
+        root.addWidget(self._hr())
+        root.addSpacing(4)
 
-        # ── Status line ──────────────────────────────────────────────────
-        self._status_lbl = QLabel("System ready.")
-        self._status_lbl.setStyleSheet(
-            "color: #64a0d0; font-size: 10px; letter-spacing: 1px; background: transparent;"
+        # — Response ——————————————————————————————————————————————————————
+        resp_hdr = QLabel("  RESPONSE")
+        resp_hdr.setStyleSheet("color:#2a4060;font-size:8px;letter-spacing:2px;"
+                               "background:transparent;")
+        root.addWidget(resp_hdr)
+        root.addSpacing(2)
+        self._resp_lbl = QLabel("")
+        self._resp_lbl.setWordWrap(True)
+        self._resp_lbl.setStyleSheet(
+            "color:#00d4ff;font-size:11px;line-height:150%;background:transparent;"
         )
-        self._status_lbl.setWordWrap(True)
-        layout.addWidget(self._status_lbl)
+        self._resp_lbl.setMaximumWidth(W - 36)
+        root.addWidget(self._resp_lbl)
 
-        # ── Divider ──────────────────────────────────────────────────────
-        layout.addWidget(self._divider())
+        root.addStretch()
+        root.addWidget(self._hr())
+        root.addSpacing(4)
 
-        # ── Transcript feed ───────────────────────────────────────────────
-        self._transcript_labels = []
-        for _ in range(4):
-            lbl = QLabel("")
-            lbl.setWordWrap(True)
-            lbl.setStyleSheet(
-                "color: #c8dcff; font-size: 10px; background: transparent;"
-            )
-            lbl.setMaximumWidth(HUD_W - 36)
-            layout.addWidget(lbl)
-            self._transcript_labels.append(lbl)
-
-        # ── Divider ──────────────────────────────────────────────────────
-        layout.addWidget(self._divider())
-
-        # ── Tool step ────────────────────────────────────────────────────
-        self._tool_lbl = QLabel("")
-        self._tool_lbl.setStyleSheet(
-            "color: #ffa020; font-size: 9px; letter-spacing: 1px; background: transparent;"
+        # — Footer: model info + stats ————————————————————————————————————
+        self._model_lbl = QLabel(f"⬡ {self._model_name}  ·  0 memories  ·  0 steps")
+        self._model_lbl.setStyleSheet(
+            "color:#2a4a6a;font-size:8px;letter-spacing:1px;background:transparent;"
         )
-        layout.addWidget(self._tool_lbl)
-
-        layout.addStretch()
-
-    def _stat_label(self, text):
-        lbl = QLabel(text)
-        lbl.setStyleSheet(
-            "color: #405060; font-size: 9px; letter-spacing: 1px; background: transparent;"
+        root.addWidget(self._model_lbl)
+        root.addSpacing(2)
+        self._stats_lbl = QLabel("CPU --%  ·  RAM --%  ·  GPU --")
+        self._stats_lbl.setStyleSheet(
+            "color:#1e3a50;font-size:8px;letter-spacing:1px;background:transparent;"
         )
-        lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
-        return lbl
+        root.addWidget(self._stats_lbl)
+        root.addSpacing(2)
+        self._session_lbl = QLabel("Session: 0s")
+        self._session_lbl.setStyleSheet(
+            "color:#1a3040;font-size:8px;letter-spacing:1px;background:transparent;"
+        )
+        root.addWidget(self._session_lbl)
 
-    def _divider(self):
-        line = QLabel()
-        line.setFixedHeight(1)
-        line.setStyleSheet("background: rgba(0, 180, 255, 40);")
-        return line
+    def _hr(self):
+        l = QLabel(); l.setFixedHeight(1)
+        l.setStyleSheet("background:rgba(0,180,255,30);")
+        return l
 
-    # ── Custom paint — glass background + border ───────────────────────────
+    # ── Glass paint ───────────────────────────────────────────────────────────
     def paintEvent(self, _):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        # Outer border glow
-        pen = QPen(C_BORDER, 1.5)
-        p.setPen(pen)
+        p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
         path = QPainterPath()
-        path.addRoundedRect(QRectF(1, 1, self.width() - 2, self.height() - 2), 12, 12)
-
-        # Background gradient
-        grad = QLinearGradient(0, 0, 0, self.height())
-        grad.setColorAt(0.0, QColor(10, 14, 32, 215))
-        grad.setColorAt(1.0, QColor( 6,  8, 18, 215))
+        path.addRoundedRect(QRectF(1, 1, W-2, H-2), 14, 14)
+        grad = QLinearGradient(0, 0, 0, H)
+        grad.setColorAt(0.0, QColor(10,14,34,225))
+        grad.setColorAt(1.0, QColor( 5, 7,16,225))
         p.fillPath(path, QBrush(grad))
-        p.drawPath(path)
+        p.setPen(QPen(C_BORDER, 1.5)); p.drawPath(path)
+        # top highlight
+        p.setPen(QPen(QColor(0,200,255,40), 1))
+        p.drawLine(16, 1, W-16, 1)
 
-        # Subtle top-edge highlight
-        highlight = QPen(QColor(0, 200, 255, 50), 1)
-        p.setPen(highlight)
-        p.drawLine(14, 1, self.width() - 14, 1)
-
-    # ── Drag support ────────────────────────────────────────────────────────
+    # ── Drag ─────────────────────────────────────────────────────────────────
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
             self._drag_pos = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
@@ -375,167 +396,259 @@ class JarvisHUD(QWidget):
         if e.buttons() == Qt.MouseButton.LeftButton and not self._drag_pos.isNull():
             self.move(e.globalPosition().toPoint() - self._drag_pos)
 
-    def mouseDoubleClickEvent(self, e):
-        self._snap_to_corner()
+    def mouseDoubleClickEvent(self, _):
+        self._slide_in()
 
-    # ── System tray ────────────────────────────────────────────────────────
+    # ── Slide animation ───────────────────────────────────────────────────────
+    def _screen_rect(self):
+        return QApplication.primaryScreen().availableGeometry()
+
+    def _position_offscreen(self):
+        sc = self._screen_rect()
+        self.move(sc.right() + 4, sc.center().y() - H // 2)
+
+    def _slide_in(self):
+        if self._anim.state() == QPropertyAnimation.State.Running:
+            self._anim.stop()
+        sc   = self._screen_rect()
+        dest = QPoint(sc.right() - W - 4, sc.center().y() - H // 2)
+        self._anim.setStartValue(self.pos())
+        self._anim.setEndValue(dest)
+        try: self._anim.finished.disconnect()
+        except: pass
+        self.show()
+        self._anim.start()
+        self._visible_out = False
+        self._restart_hide_timer()
+
+    def _slide_out(self):
+        if self._pinned or self._visible_out:
+            return
+        sc   = self._screen_rect()
+        dest = QPoint(sc.right() + 4, self.y())
+        self._anim.setStartValue(self.pos())
+        self._anim.setEndValue(dest)
+        try: self._anim.finished.disconnect()
+        except: pass
+        self._anim.finished.connect(self.hide)
+        self._anim.start()
+        self._visible_out = True
+
+    def _restart_hide_timer(self):
+        self._hide_timer.stop()
+        if not self._pinned:
+            self._hide_timer.start(AUTO_HIDE)
+
+    # ── Pin ───────────────────────────────────────────────────────────────────
+    def _toggle_pin(self):
+        self._pinned = not self._pinned
+        self._pin_btn.setStyleSheet(
+            f"color:{'#00d4ff' if self._pinned else '#303850'};"
+            "font-size:14px;background:transparent;cursor:pointer;"
+        )
+        if not self._pinned:
+            self._restart_hide_timer()
+        else:
+            self._hide_timer.stop()
+
+    # ── Tray ─────────────────────────────────────────────────────────────────
     def _setup_tray(self):
-        # Create a small cyan circle icon programmatically
-        px = QPixmap(32, 32)
-        px.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(px)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setBrush(QBrush(C_ACCENT))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawEllipse(4, 4, 24, 24)
-        painter.end()
+        px = QPixmap(32, 32); px.fill(Qt.GlobalColor.transparent)
+        qp = QPainter(px)
+        qp.setRenderHint(QPainter.RenderHint.Antialiasing)
+        qp.setBrush(QBrush(C_ACCENT)); qp.setPen(Qt.PenStyle.NoPen)
+        qp.drawEllipse(4, 4, 24, 24); qp.end()
 
         self._tray = QSystemTrayIcon(QIcon(px), self)
         menu = QMenu()
-
-        show_act   = QAction("Show HUD",    self)
-        hide_act   = QAction("Hide HUD",    self)
-        corner_act = QAction("Snap to Corner", self)
-        quit_act   = QAction("Quit HUD",    self)
-
-        show_act.triggered.connect(self.show)
-        hide_act.triggered.connect(self.hide)
-        corner_act.triggered.connect(self._snap_to_corner)
-        quit_act.triggered.connect(QApplication.quit)
-
-        menu.addAction(show_act)
-        menu.addAction(hide_act)
-        menu.addAction(corner_act)
-        menu.addSeparator()
-        menu.addAction(quit_act)
+        for label, fn in [
+            ("Show", self._slide_in),
+            ("Hide", self._slide_out),
+            ("Pin / Unpin", self._toggle_pin),
+            ("Quit", QApplication.quit),
+        ]:
+            act = QAction(label, self)
+            act.triggered.connect(fn)
+            if label == "Quit":
+                menu.addSeparator()
+            menu.addAction(act)
 
         self._tray.setContextMenu(menu)
-        self._tray.setToolTip("J.A.R.V.I.S HUD")
-        self._tray.activated.connect(self._on_tray_click)
+        self._tray.setToolTip("J.A.R.V.I.S")
+        self._tray.activated.connect(
+            lambda r: self._slide_in() if r == QSystemTrayIcon.ActivationReason.Trigger else None
+        )
         self._tray.show()
 
-    def _on_tray_click(self, reason):
-        if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            self.setVisible(not self.isVisible())
-
-    # ── WebSocket event handler ─────────────────────────────────────────────
+    # ── Event handlers ────────────────────────────────────────────────────────
     def _on_event(self, data: dict):
         t = data.get("type", "")
+        self._slide_in()   # any event wakes the panel
 
         if t == "state":
-            raw_status = data.get("status", "idle")
-            # Map backend status strings to ring states
-            if "speaking" in raw_status:
-                self._set_state("speaking")
-            elif "listening" in raw_status or "transcrib" in raw_status:
+            raw = data.get("status", "idle")
+            if "speaking" in raw:   self._set_state("speaking")
+            elif raw in ("idle", ""):  self._set_state("idle")
+            elif any(k in raw for k in ("listening", "transcrib", "waiting")):
                 self._set_state("listening")
-            elif "think" in raw_status.lower() or "processing" in raw_status.lower():
-                self._set_state("thinking")
-            else:
-                self._set_state("idle")
-            self._status_lbl.setText(data.get("text", "")[:80])
+            else:                   self._set_state("thinking")
 
         elif t == "transcription":
-            self._push_transcript("you", data.get("text", ""))
+            txt = data.get("text", "")
+            self._user_lbl.setText(f'\u201c{txt}\u201d')
             self._set_state("thinking")
+            self._resp_lbl.setText("")
 
         elif t == "llm_response":
-            self._push_transcript("jarvis", data.get("text", ""))
+            self._resp_lbl.setText(data.get("text", "")[:320])
             self._set_state("speaking")
 
-        elif t in ("agent_event", "agent_tool"):
-            event = data.get("event", data)
-            etype = event.get("type", "")
+        elif t == "tasks":
+            self._update_tasks(data.get("message", []))
+
+        elif t == "proactive_event":
+            msg = data.get("message", {})
+            txt = msg.get("text", "")
+            self._resp_lbl.setText(f"PROACTIVE: {txt}")
+            self._push_trace("✧", f"Proactive Suggestion: {txt[:60]}", "#c080ff")
+            self._slide_in()
+
+        elif t == "memory_stats":
+            stats = data.get("message", {}) # data is {"type": "memory_stats", "message": {...}}
+            self._mem_count = stats.get("total_entries", 0)
+            self._update_model_label()
+
+        elif t in ("agent_event",):
+            ev    = data.get("event", {})
+            etype = ev.get("type", "")
             if etype == "AGENT_THOUGHT":
-                self._status_lbl.setText(f"⟳ {event.get('text','')[:75]}")
-                self._set_state("thinking")
+                self._push_trace("⟳", ev.get("text", "")[:80], "#ffa020")
             elif etype == "AGENT_TOOL_CALL":
-                action = event.get("action", "tool")
-                self._tool_lbl.setText(f"▶ {action}({json.dumps(event.get('args', {}))[:40]})")
+                args_str = json.dumps(ev.get("args", {}))[:48]
+                self._push_trace("▶", f"{ev.get('action')}({args_str})", "#00d4ff")
+                self._step_count += 1
             elif etype == "AGENT_TOOL_RESULT":
-                obs = event.get("observation", "")[:60]
-                self._tool_lbl.setText(f"✓ {obs}")
+                obs = ev.get("observation", "")
+                self._push_trace("✓", str(obs)[:80], "#40e080")
+            self._update_model_label()
 
-        elif t == "audio_level":
-            pass  # could animate waveform here later
-
-    def _on_ws_status(self, status: str):
-        self._ws_status = status
-        colours = {
+    def _on_conn(self, status: str):
+        cfg = {
             "connected":    ("#00ff80", "◉ ONLINE"),
             "connecting":   ("#ffa020", "◎ CONNECTING..."),
             "disconnected": ("#ff4040", "○ OFFLINE"),
         }
-        col, label = colours.get(status, ("#404870", status.upper()))
-        self._ws_lbl.setText(label)
-        self._ws_lbl.setStyleSheet(
-            f"color: {col}; font-size: 9px; letter-spacing: 2px; background: transparent;"
+        col, txt = cfg.get(status, ("#404870", status.upper()))
+        self._conn_lbl.setText(txt)
+        self._conn_lbl.setStyleSheet(
+            f"color:{col};font-size:8px;letter-spacing:2px;background:transparent;"
         )
 
-    # ── Helpers ────────────────────────────────────────────────────────────
+    def _on_stats(self, s: dict):
+        self._stats = s
+        def c(v):
+            if v is None: return "#1e3a50"
+            return "#ff4040" if v>85 else "#ffa020" if v>60 else "#2a6040"
+        cpu, ram, gpu = s.get("cpu"), s.get("ram"), s.get("gpu")
+        net = s.get("net", (0,0))
+        batt = s.get("batt")
+        
+        gpu_txt = f"GPU {gpu:.0f}%" if gpu is not None else "GPU n/a"
+        net_txt = f"⇅ {net[1]:.0f}/{net[0]:.0f} KB/s"
+        batt_txt = f" | ⚡ {batt:.0f}%" if batt is not None else ""
+        
+        self._stats_lbl.setText(
+            f"CPU {cpu:.0f}%  ·  RAM {ram:.0f}%  ·  {gpu_txt}  ·  {net_txt}{batt_txt}"
+        )
+        # colour worst metric
+        worst = max(v for v in [cpu, ram] if v is not None)
+        self._stats_lbl.setStyleSheet(
+            f"color:{c(worst)};font-size:8px;letter-spacing:1px;background:transparent;"
+        )
+
+    def _update_session_label(self):
+        elapsed = int(__import__("time").time() - self._session_start)
+        h, rem  = divmod(elapsed, 3600)
+        m, s    = divmod(rem, 60)
+        fmt = f"{h}h {m:02d}m {s:02d}s" if h else f"{m}m {s:02d}s"
+        self._session_lbl.setText(f"Session: {fmt}")
+
+    def _update_model_label(self):
+        self._model_lbl.setText(
+            f"⬡ {self._model_name}  ·  {self._mem_count} memories  ·  {self._step_count} steps"
+        )
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
     def _set_state(self, state: str):
         self._state = state
         self._ring.set_state(state)
+        self._wave.set_active(state == "listening")
 
-    def _push_transcript(self, role: str, text: str):
-        self._transcript.append({"role": role, "text": text})
-        self._transcript = self._transcript[-4:]  # keep last 4
-        for i, lbl in enumerate(self._transcript_labels):
-            if i < len(self._transcript):
-                entry = self._transcript[i]
-                prefix = "YOU  " if entry["role"] == "you" else "J.A.R"
-                col    = "#a0c8ff" if entry["role"] == "you" else "#00d4ff"
-                lbl.setStyleSheet(
-                    f"color: {col}; font-size: 10px; background: transparent;"
-                )
-                lbl.setText(f"{prefix}  {entry['text'][:52]}{'…' if len(entry['text'])>52 else ''}")
-            else:
-                lbl.setText("")
+    def _update_tasks(self, tasks):
+        """Refreshes the Mission Status section."""
+        # Clear current tasks
+        while self._task_layout.count():
+            item = self._task_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        self._tasks = tasks[:3] # Show only top 3 tasks
+        for task in self._tasks:
+            t_box = QWidget()
+            t_lay = QHBoxLayout(t_box)
+            t_lay.setContentsMargins(4, 0, 4, 0)
+            
+            icon = "▣" if task.get("status") == "active" else "□"
+            col = "#00d4ff" if task.get("status") == "active" else "#3a5070"
+            
+            lbl = QLabel(f"<span style='color:{col}'>{icon}</span>  {task.get('t', '')[:40]}")
+            lbl.setStyleSheet("color:#8090b0; font-size:9px; background:transparent;")
+            
+            t_lay.addWidget(lbl)
+            t_lay.addStretch()
+            
+            eta = task.get("eta", "")
+            if eta:
+                eta_lbl = QLabel(eta)
+                eta_lbl.setStyleSheet("color:#3a5070; font-size:8px; background:transparent;")
+                t_lay.addWidget(eta_lbl)
+                
+            self._task_layout.addWidget(t_box)
 
-    def _on_stats(self, stats: dict):
-        self._stats = stats
-        cpu = stats["cpu"]
-        ram = stats["ram"]
-        gpu = stats["gpu"]
-
-        def col(pct):
-            if pct is None: return "#405060"
-            if pct > 85: return "#ff4040"
-            if pct > 60: return "#ffa020"
-            return "#3a9060"
-
-        self._cpu_lbl.setText(f"CPU {cpu:.0f}%")
-        self._cpu_lbl.setStyleSheet(
-            f"color: {col(cpu)}; font-size: 9px; letter-spacing: 1px; background: transparent;"
+    def _push_trace(self, icon: str, text: str, colour: str):
+        """Appends a step to the agent trace scroll area."""
+        lbl = QLabel(f"<span style='color:{colour}'>{icon}</span>  {text}")
+        lbl.setWordWrap(True)
+        lbl.setStyleSheet(
+            "color:#8090b0;font-size:9px;padding:1px 2px;background:transparent;"
         )
-        self._ram_lbl.setText(f"RAM {ram:.0f}%")
-        self._ram_lbl.setStyleSheet(
-            f"color: {col(ram)}; font-size: 9px; letter-spacing: 1px; background: transparent;"
-        )
-        if gpu is not None:
-            self._gpu_lbl.setText(f"GPU {gpu:.0f}%")
-            self._gpu_lbl.setStyleSheet(
-                f"color: {col(gpu)}; font-size: 9px; letter-spacing: 1px; background: transparent;"
-            )
+        lbl.setMaximumWidth(W - 52)
+        # insert before the stretch
+        count = self._trace_layout.count()
+        self._trace_layout.insertWidget(count - 1, lbl)
+        self._trace.append(lbl)
 
-    # ── Close == hide (stays in tray) ──────────────────────────────────────
+        # keep max 20 rows
+        if len(self._trace) > 20:
+            old = self._trace.pop(0)
+            self._trace_layout.removeWidget(old)
+            old.deleteLater()
+
+        # auto-scroll to bottom
+        QTimer.singleShot(10, lambda: self._trace_scroll.verticalScrollBar().setValue(
+            self._trace_scroll.verticalScrollBar().maximum()
+        ))
+
     def closeEvent(self, e):
-        e.ignore()
-        self.hide()
+        e.ignore(); self._slide_out()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Entry point
-# ─────────────────────────────────────────────────────────────────────────────
-def launch(ws_url: str = "ws://localhost:8000/ws"):
+# ── Entry point ───────────────────────────────────────────────────────────────
+def launch(ws_url="ws://localhost:8000/ws"):
     app = QApplication.instance() or QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
-
     hud = JarvisHUD(ws_url=ws_url)
-    hud.show()
-
     return app.exec()
-
 
 if __name__ == "__main__":
     sys.exit(launch())

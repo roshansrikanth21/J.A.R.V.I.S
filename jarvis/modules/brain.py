@@ -41,9 +41,14 @@ class Brain:
         context_str = ""
 
         if self.memory:
+            # New enhanced memory recall
             memories = self.memory.recall(query)
             if memories:
-                context_str = "\nRelevant past memories:\n" + "\n".join(memories)
+                context_str = "\nRelevant past memories:\n"
+                for m in memories:
+                    ts = _dt.datetime.fromtimestamp(m['timestamp'])
+                    time_ago = str(_dt.datetime.now() - ts).split('.')[0]
+                    context_str += f"- [{time_ago} ago] {m['content']} (Importance: {m['importance']:.2f})\n"
 
         if context_override:
             context_str += f"\nAdditional Context:\n{context_override}"
@@ -172,7 +177,10 @@ class Brain:
         """
         max_steps = max_steps or self.max_agent_steps
         tools = tools or self.default_tools()
-        memories = self.memory.recall(query) if self.memory else []
+        memories = []
+        if self.memory:
+            m_list = self.memory.recall(query)
+            memories = [f"{m['content']} ({m['importance']:.2f})" for m in m_list]
         transcript = []
 
         for step in range(max_steps):
@@ -395,14 +403,21 @@ User request: {query}
             return "Nothing to remember."
         if not self.memory:
             return "Memory is unavailable."
-        self.memory.remember(text, metadata={"source": "agent"})
-        return "Saved to memory."
+        # Use importance prediction and association
+        self.memory.remember(text)
+        return "Memory processed and stored with cognitive importance scoring."
 
     def _tool_recall(self, query):
         if not self.memory:
             return "Memory is unavailable."
         memories = self.memory.recall(str(query), n_results=5)
-        return "\n".join(memories) if memories else "No relevant memories found."
+        if not memories:
+            return "No relevant memories found."
+        
+        output = "Recall Results:\n"
+        for m in memories:
+            output += f"- {m['content']} (Score: {m['importance']:.2f})\n"
+        return output
 
     def _tool_search_live(self, query):
         query = str(query).strip()
