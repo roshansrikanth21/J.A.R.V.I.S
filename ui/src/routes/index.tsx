@@ -19,6 +19,7 @@ import {
   Minus,
   Music,
   Network,
+  Newspaper,
   Radio,
   Search,
   Send,
@@ -28,6 +29,7 @@ import {
   Volume2,
   Wrench,
   X,
+  XOctagon,
   Zap,
 } from "lucide-react";
 import { Panel } from "@/components/jarvis/Panel";
@@ -76,6 +78,7 @@ type AgentStatus = {
   events?: AgentEvent[];
   safety?: Record<string, boolean | string>;
 };
+type NewsArticle = { title: string; url: string; source: string };
 
 declare global {
   interface Window {
@@ -120,6 +123,7 @@ function LoadingShell() {
 function CommandDeck() {
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const connectingRef = useRef(false);
   const [speaking, setSpeaking] = useState(false);
   const speakingTimeoutRef = useRef<number | null>(null);
   const [listening, setListening] = useState(false);
@@ -132,6 +136,7 @@ function CommandDeck() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [agentStatus, setAgentStatus] = useState<AgentStatus>({});
   const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([]);
+  const [news, setNews] = useState<NewsArticle[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
 
@@ -154,8 +159,9 @@ function CommandDeck() {
   }, [connected]);
 
   const connectWs = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN || connecting) return;
+    if (wsRef.current?.readyState === WebSocket.OPEN || connectingRef.current) return;
 
+    connectingRef.current = true;
     setConnecting(true);
     const wsUrl = import.meta.env.DEV ? "ws://localhost:8000/ws" : `ws://${window.location.host}/ws`;
     const ws = new WebSocket(wsUrl);
@@ -164,6 +170,7 @@ function CommandDeck() {
     ws.onopen = () => {
       setConnected(true);
       setConnecting(false);
+      connectingRef.current = false;
       setError(null);
       addLine("system", "WebSocket uplink established.");
       refreshAgentStatus();
@@ -174,11 +181,13 @@ function CommandDeck() {
       setListening(false);
       setSpeaking(false);
       setConnecting(false);
+      connectingRef.current = false;
     };
 
     ws.onerror = () => {
       setError("Backend link standby. Initializing modules...");
       setConnecting(false);
+      connectingRef.current = false;
       // Retry after 5 seconds
       setTimeout(connectWs, 5000);
     };
@@ -201,6 +210,7 @@ function CommandDeck() {
           refreshAgentStatus();
         }
         if (data.type === "audio_level") setAudioLevel(Number(data.level) || 0);
+        if (data.type === "news_data" && Array.isArray(data.articles)) setNews(data.articles);
         if (data.type === "tasks" && Array.isArray(data.tasks)) setTasks(data.tasks);
         if (data.type === "agent_event" && data.event) {
           const ev = data.event;
@@ -225,7 +235,7 @@ function CommandDeck() {
         addLine("system", "Received an unreadable backend packet.");
       }
     };
-  }, [addLine, connecting, refreshAgentStatus]);
+  }, [addLine, refreshAgentStatus]);
 
   useEffect(() => {
     connectWs();
@@ -444,6 +454,9 @@ function CommandDeck() {
                 <button className="icon-button strong" onClick={() => sendCommand()} title="Send command">
                   <Send className="h-4 w-4" />
                 </button>
+                <button className="icon-button" onClick={() => sendCommand("interrupt")} title="Interrupt Speech">
+                  <XOctagon className="h-4 w-4 text-warn" />
+                </button>
                 <button className="icon-button" onClick={toggleListening} title="Toggle listening">
                   {listening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
                 </button>
@@ -463,6 +476,26 @@ function CommandDeck() {
 
         <aside className="col-span-12 xl:col-span-3 space-y-3">
           <MusicPanel active={connected || speaking || listening} />
+
+          {news.length > 0 && (
+            <Panel title="Global Intelligence" status={`${news.length} reports`}>
+              <div className="space-y-3 pr-1 max-h-64 overflow-y-auto">
+                {news.map((item, idx) => (
+                  <div key={idx} className="flex gap-2 min-w-0 group">
+                    <Newspaper className="h-3.5 w-3.5 text-hud mt-0.5 shrink-0 opacity-70 group-hover:opacity-100 transition-opacity" />
+                    <div className="min-w-0">
+                      <a href={item.url} target="_blank" rel="noreferrer" className="text-[11px] leading-snug text-foreground hover:text-hud transition-colors line-clamp-2">
+                        {item.title}
+                      </a>
+                      <div className="text-[9px] uppercase tracking-[0.1em] text-muted-foreground mt-1">
+                        {item.source || "UNKNOWN SOURCE"}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Panel>
+          )}
 
           <Panel title="Execution Queue" status={activeTask ? "active" : `${queuedTasks.length} queued`}>
             <div className="space-y-2">

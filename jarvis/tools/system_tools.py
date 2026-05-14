@@ -50,13 +50,30 @@ class GitHubTools:
 
             if data.get("status") == "ok":
                 articles = data["articles"][:5]
-                news_texts = [f"{i+1}. {article['title']}" for i, article in enumerate(articles)]
-                combined_news = "\n".join(news_texts)
-                return f"Top 5 News Headlines:\n{combined_news}"
+                news_list = [{"title": article.get("title", ""), "url": article.get("url", ""), "source": article.get("source", {}).get("name", "")} for article in articles]
+                return {"type": "news_data", "articles": news_list}
             else:
                 return "Failed to fetch news from the API."
         except Exception as e:
             return f"News fetch error: {e}"
+
+    def search_web(self, query, max_results=3):
+        """Searches the internet using DuckDuckGo."""
+        try:
+            from duckduckgo_search import DDGS
+            with DDGS() as ddgs:
+                results = list(ddgs.text(query, max_results=max_results))
+            
+            if not results:
+                return f"No web results found for '{query}'."
+            
+            formatted_results = []
+            for i, r in enumerate(results):
+                formatted_results.append(f"Result {i+1}:\nTitle: {r.get('title')}\nURL: {r.get('href')}\nSummary: {r.get('body')}")
+                
+            return f"Web Search Results for '{query}':\n\n" + "\n\n".join(formatted_results)
+        except Exception as e:
+            return f"Web Search Error: {e}"
 
     def control_system(self, action):
         """Restarts, Logs out, or Sleeps the system."""

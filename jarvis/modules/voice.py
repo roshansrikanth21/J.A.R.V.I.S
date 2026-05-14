@@ -170,61 +170,55 @@ class VoiceSystem:
         return text.strip()
 
     def speak(self, text):
-        """Text-to-speech using Piper."""
+        """Text-to-speech using edge-tts."""
         if not text:
             return
             
         print(f"[JARVIS] {text}")
-        model_path = self.voice_cfg.get("tts_model_path", "en_US-lessac-high.onnx")
         
-        if not os.path.exists(model_path):
-            print("[WARN] Piper model not found. Using print instead.")
-            return
-
-        # Run Piper TTS executable
-        # Assumes piper is in PATH or current dir
-        command = [
-            "piper", 
-            "--model", model_path,
-            "--output_raw"
-        ]
+        # We will use edge-tts for expressive voice
+        # Ensure we have a distinct, Jarvis-like voice (e.g. en-GB-RyanNeural)
+        voice = self.voice_cfg.get("edge_tts_voice", "en-GB-RyanNeural")
         
         try:
-            piper_proc = subprocess.Popen(
-                command,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL
-            )
-            # Pipe the raw audio output directly to aplay/sox/ffplay 
-            # On Windows, we can use simpleaudio or a similar player, but Piper has --output-file
-            # For simplicity let's just make it output a temp file and play it
+            import edge_tts
+            import asyncio
+            import pygame
             
-            temp_wav = tempfile.mktemp(suffix=".wav")
-            command = [
-                "piper",
-                "--model", model_path,
-                "--output_file", temp_wav
-            ]
-            subprocess.run(command, input=text.encode('utf-8'), stderr=subprocess.DEVNULL)
+            temp_mp3 = tempfile.mktemp(suffix=".mp3")
             
-            import wave
-            import pyaudio
+            async def generate_speech():
+                communicate = edge_tts.Communicate(text, voice)
+                await communicate.save(temp_mp3)
+                
+            # Run the async generation
+            asyncio.run(generate_speech())
             
-            wf = wave.open(temp_wav, 'rb')
-            p = pyaudio.PyAudio()
-            stream = p.open(format=p.get_format_from_width(wf.getsampwidth()),
-                            channels=wf.getnchannels(),
-                            rate=wf.getframerate(),
-                            output=True)
-            data = wf.readframes(1024)
-            while data:
-                stream.write(data)
-                data = wf.readframes(1024)
-            stream.stop_stream()
-            stream.close()
-            p.terminate()
-            os.remove(temp_wav)
+            # Play the audio using pygame
+            pygame.mixer.init()
+            pygame.mixer.music.load(temp_mp3)
+            pygame.mixer.music.play()
             
+            while pygame.mixer.music.get_busy():
+                pygame.time.Clock().tick(10)
+                
+            pygame.mixer.quit()
+            
+            try:
+                os.remove(temp_mp3)
+            except OSError:
+                pass
+                
+        except ImportError as e:
+            print(f"[WARN] TTS missing packages: {e}. Using print instead.")
         except Exception as e:
             print(f"[TTS ERROR] {e}")
+
+    def stop(self):
+        """Immediately halts any ongoing TTS playback."""
+        try:
+            import pygame
+            if pygame.mixer.get_init():
+                pygame.mixer.music.stop()
+        except Exception as e:
+            print(f"[VOICE STOP ERROR] {e}")

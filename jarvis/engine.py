@@ -30,7 +30,8 @@ class JarvisEngine:
 
     def emit_event(self, event_type, message):
         """Emits a normalized WebSocket event payload to the async queue."""
-        print(f"[{event_type.upper()}] {message}")
+        if event_type != "audio_level":
+            print(f"[{event_type.upper()}] {message}")
         if not (self.loop and self.event_queue):
             return
 
@@ -103,7 +104,14 @@ class JarvisEngine:
         elif action == "get_news":
             self.emit_event("status", "Fetching news...")
             result = self.github_tools.get_news()
-            response_text = result
+            if isinstance(result, dict) and result.get("type") == "news_data":
+                self.emit_event("news_data", result)
+                # Ask brain to summarize
+                titles = [a["title"] for a in result["articles"]]
+                summary_prompt = f"The following are the top news headlines: {titles}. Briefly summarize the most important one in one sentence to tell the user."
+                response_text = self.brain.ask(summary_prompt)
+            else:
+                response_text = result
             
         elif action == "system_control":
             command = intent.get("args", {}).get("command", "")
@@ -138,7 +146,12 @@ class JarvisEngine:
         try:
             self.voice.speak(response_text)
         finally:
-            self.emit_event("status", "Listening")
+            self.emit_event("status", "idle")
+            
+    def stop_speaking(self):
+        """Immediately interrupt JARVIS."""
+        self.voice.stop()
+        self.emit_event("status", "idle")
 
     def get_tasks(self):
         """Returns the task list formatted for the UI."""
@@ -177,6 +190,11 @@ class JarvisEngine:
                     "description": "Fetch the latest top news headlines.",
                     "args_schema": {},
                     "handler": lambda args: self.github_tools.get_news(),
+                },
+                "search_web": {
+                    "description": "Search the internet for up-to-date information, news, vulnerabilities, concepts, or general facts.",
+                    "args_schema": {"query": "string"},
+                    "handler": lambda args: self.github_tools.search_web(args.get("query", "")),
                 },
             }
         )

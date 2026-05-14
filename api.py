@@ -166,11 +166,19 @@ async def websocket_endpoint(websocket: WebSocket):
             elif action == "stop_listening":
                 engine.set_listening(False)
                 await websocket.send_json({"type": "state", "status": "idle", "text": "Listening paused."})
+            elif action == "interrupt":
+                engine.stop_speaking()
+                await websocket.send_json({"type": "state", "status": "idle", "text": "Interrupted."})
             elif action == "command":
                 command = data.get("text", "").strip()
                 if command:
-                    response = engine.process_text_command(command)
-                    await websocket.send_json({"type": "llm_response", "text": response})
+                    lower_cmd = command.lower()
+                    if lower_cmd in ["stop", "shut up", "quiet", "cancel"]:
+                        engine.stop_speaking()
+                        await websocket.send_json({"type": "state", "status": "idle", "text": "Speech interrupted."})
+                    else:
+                        response = engine.process_text_command(command)
+                        await websocket.send_json({"type": "llm_response", "text": response})
     except WebSocketDisconnect:
         if websocket in active_connections:
             active_connections.remove(websocket)
