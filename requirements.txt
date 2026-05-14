@@ -26,3 +26,5 @@ beautifulsoup4==4.12.3
 duckduckgo-search
 pywinauto==0.6.8
 pytesseract
+PyQt6
+psutil
