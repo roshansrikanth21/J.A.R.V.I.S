@@ -30,9 +30,11 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { ArcReactor } from "@/components/jarvis/ArcReactor";
 import { Panel } from "@/components/jarvis/Panel";
 import { Waveform } from "@/components/jarvis/Waveform";
+import { SettingsDrawer } from "@/components/jarvis/SettingsDrawer";
+import { AgentTaskBoard, type AgentEvent } from "@/components/jarvis/AgentTaskBoard";
+import { ReactorVisualizer } from "@/components/jarvis/ReactorVisualizer";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -71,6 +73,7 @@ type AgentStatus = {
   tools?: ToolInfo[];
   tasks?: Task[];
   trace?: AgentTrace[];
+  events?: AgentEvent[];
   safety?: Record<string, boolean | string>;
 };
 
@@ -128,6 +131,7 @@ function CommandDeck() {
   ]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [agentStatus, setAgentStatus] = useState<AgentStatus>({});
+  const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
 
@@ -198,6 +202,20 @@ function CommandDeck() {
         }
         if (data.type === "audio_level") setAudioLevel(Number(data.level) || 0);
         if (data.type === "tasks" && Array.isArray(data.tasks)) setTasks(data.tasks);
+        if (data.type === "agent_event" && data.event) {
+          const ev = data.event;
+          setAgentEvents((prev) => [...prev, {
+            id: `${Date.now()}-${Math.random()}`,
+            type: ev.type || "agent_tool",
+            text: ev.text,
+            action: ev.action,
+            args: ev.args,
+            observation: ev.observation,
+            status: ev.status,
+            step: ev.step,
+            at: new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+          }].slice(-50));
+        }
         if (data.type === "agent_tool" && data.step) {
           const step = data.step as AgentTrace;
           addLine("tool", `${step.action}: ${step.observation}`);
@@ -302,6 +320,7 @@ function CommandDeck() {
             <button className="icon-button" onClick={refreshAgentStatus} title="Refresh agent status">
               <Activity className="h-4 w-4" />
             </button>
+            <SettingsDrawer />
             <button
               className="icon-button"
               onClick={() => globalThis.window?.electronAPI?.restartBackend?.()}
@@ -387,7 +406,7 @@ function CommandDeck() {
             </div>
 
             <div className="relative flex flex-col items-center justify-center py-6">
-              <ArcReactor active={connected} speaking={speaking || listening} />
+              <ReactorVisualizer active={connected} level={audioLevel} />
               <DualAudioVisualizer
                 userActive={listening && !speaking}
                 jarvisActive={speaking}
@@ -457,23 +476,7 @@ function CommandDeck() {
             </div>
           </Panel>
 
-          <Panel title="Agent Trace" status={`${trace.length} steps`}>
-            <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
-              {trace.length === 0 ? (
-                <EmptyState text="Tool calls will appear here." />
-              ) : (
-                trace.slice(-8).reverse().map((step, index) => (
-                  <div key={`${step.step}-${index}`} className="trace-row">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-[10px] uppercase tracking-[0.18em] text-hud">{step.action}</span>
-                      <span className="text-[9px] text-muted-foreground">#{step.step}</span>
-                    </div>
-                    <p className="mt-1 text-[11px] text-muted-foreground line-clamp-3">{step.observation}</p>
-                  </div>
-                ))
-              )}
-            </div>
-          </Panel>
+          <AgentTaskBoard events={agentEvents} />
 
           <Panel title="Tool Registry" status={`${tools.length} online`}>
             <div className="grid grid-cols-1 gap-2 max-h-72 overflow-y-auto pr-1">

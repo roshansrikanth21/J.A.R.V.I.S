@@ -54,6 +54,8 @@ class JarvisEngine:
             payload = {"type": "tasks", "tasks": self.get_tasks()}
         elif event_type == "agent_tool":
             payload = {"type": "agent_tool", "step": message}
+        elif event_type == "agent_event":
+            payload = {"type": "agent_event", "event": message}
 
         asyncio.run_coroutine_threadsafe(self.event_queue.put(payload), self.loop)
 
@@ -183,8 +185,25 @@ class JarvisEngine:
     def _record_agent_step(self, step):
         self.agent_trace.append(step)
         self.agent_trace = self.agent_trace[-25:]
-        self.emit_event("agent_tool", step)
-        self.emit_event("status", f"Tool: {step['action']} -> {step['observation'][:120]}")
+        
+        # New structured event
+        self.emit_event("agent_event", step)
+        
+        # Maintain backwards compatibility or UI updates
+        event_type = step.get("type", "")
+        if event_type == "AGENT_THOUGHT":
+            self.emit_event("status", f"Thinking: {step.get('text', '')[:120]}")
+        elif event_type == "AGENT_TOOL_CALL":
+            self.emit_event("status", f"Calling tool: {step.get('action')}")
+        elif event_type == "AGENT_TOOL_RESULT":
+            self.emit_event("status", f"Tool result: {step.get('observation', '')[:120]}")
+        elif event_type == "AGENT_PLAN_UPDATE":
+            self.emit_event("status", f"Plan updated: {step.get('status')}")
+        else:
+            # Fallback for old style
+            self.emit_event("agent_tool", step)
+            if "action" in step and "observation" in step:
+                self.emit_event("status", f"Tool: {step.get('action')} -> {step.get('observation', '')[:120]}")
 
     def get_agent_status(self):
         """Returns UI-facing agent capability and runtime state."""

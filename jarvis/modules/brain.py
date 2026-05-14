@@ -189,10 +189,19 @@ class Brain:
 
             action = str(decision.get("action", "final")).strip()
             args = decision.get("args", {}) or {}
+            thought = decision.get("thought", "")
+
+            if on_step and thought:
+                on_step({"type": "AGENT_THOUGHT", "text": thought, "step": step + 1})
 
             if action == "final":
                 answer = str(decision.get("answer", "")).strip()
+                if on_step:
+                    on_step({"type": "AGENT_PLAN_UPDATE", "status": "completed"})
                 return answer or self.ask(query, context_override=context_override)
+
+            if on_step:
+                on_step({"type": "AGENT_TOOL_CALL", "action": action, "args": args, "step": step + 1})
 
             if action not in tools:
                 observation = f"Tool '{action}' is not available. Choose one of: {', '.join(tools)}."
@@ -202,13 +211,19 @@ class Brain:
             transcript.append(
                 {
                     "step": step + 1,
+                    "thought": thought,
                     "action": action,
                     "args": args,
                     "observation": self._truncate(observation, 1200),
                 }
             )
             if on_step:
-                on_step(transcript[-1])
+                on_step({
+                    "type": "AGENT_TOOL_RESULT",
+                    "step": step + 1,
+                    "action": action,
+                    "observation": self._truncate(observation, 1200)
+                })
 
         summary = "\n".join(
             f"{item['step']}. {item['action']} -> {item['observation']}"
@@ -295,10 +310,10 @@ class Brain:
 
 You are running JARVIS's private autonomous agent loop. Decide the next safe action.
 Use tools only when they materially help. Prefer a final answer for simple requests.
-Never invent tool results. Do not expose private reasoning; keep thoughts brief.
+Never invent tool results. Keep thoughts brief and focused on the task.
 Return ONLY one valid JSON object in one of these forms:
-{{"action":"tool_name","args":{{"key":"value"}}}}
-{{"action":"final","answer":"short user-facing answer"}}
+{{"thought":"reasoning for this step","action":"tool_name","args":{{"key":"value"}}}}
+{{"thought":"final conclusion","action":"final","answer":"short user-facing answer"}}
 
 Available tools:
 {json.dumps(tool_specs, indent=2)}

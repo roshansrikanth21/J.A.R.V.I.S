@@ -114,13 +114,19 @@ class VoiceSystem:
                         print("[JARVIS] Wake word detected!")
                         return True
 
+                import math
                 if use_clap or on_level:
-                    peak = max(abs(sample) for sample in pcm_unpacked)
+                    # Calculate RMS energy for more accurate audio level representation
+                    sum_squares = sum(sample * sample for sample in pcm_unpacked)
+                    rms = math.sqrt(sum_squares / max(1, len(pcm_unpacked)))
+                    
                     # Broadcast level to UI
                     if on_level:
-                        on_level(peak)
+                        on_level(rms)
                     
                     now = time.time()
+                    # Keep clap detection on RMS or we can compute peak just for clap
+                    peak = max(abs(sample) for sample in pcm_unpacked)
                     if use_clap and peak >= clap_threshold and (now - last_clap_ts) >= clap_cooldown_s:
                         clap_hits.append(now)
                         last_clap_ts = now
