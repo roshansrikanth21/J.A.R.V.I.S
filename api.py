@@ -15,6 +15,8 @@ import logging
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(message)s")
 logger = logging.getLogger("uvicorn.error")
 
+from jarvis.engine import JarvisEngine
+
 app = FastAPI(title="J.A.R.V.I.S. Web OS")
 
 # Add CORS middleware to allow the UI to communicate with the backend
