@@ -24,8 +24,9 @@ class Brain:
         self.config = config.get("brain", {})
         self.memory = memory_system
         self.primary_llm = self.config.get("primary_llm", "local")
+        self.ollama_server = self.config.get("ollama_server", "http://localhost:11434")
         self.local_model = self.config.get("local_model", "llama3.1:8b-instruct-q4_K_M")
-        self.max_agent_steps = int(self.config.get("max_agent_steps", 5))
+        self.max_agent_steps = int(self.config.get("max_agent_steps", 25))
         self.use_llm_intent_router = bool(self.config.get("use_llm_intent_router", False))
 
         self.system_prompt = "You are JARVIS. Answer concisely."
@@ -60,11 +61,12 @@ class Brain:
             return "I am currently offline. Please install the Ollama Python package."
 
         try:
-            response = ollama.generate(model=self.local_model, prompt=prompt)
+            client = ollama.Client(host=self.ollama_server)
+            response = client.generate(model=self.local_model, prompt=prompt)
             return response["response"].strip()
         except Exception as e:
-            print(f"[OLLAMA ERROR] Is Ollama running? {e}")
-            return "I am currently offline. Please start the Ollama server."
+            print(f"[OLLAMA ERROR] Is Ollama running at {self.ollama_server}? {e}")
+            return f"I am currently offline. Please start the Ollama server at {self.ollama_server}."
 
     def _ask_claude(self, prompt):
         if anthropic is None:
@@ -260,20 +262,20 @@ class Brain:
                 "args_schema": {"query": "string"},
                 "handler": lambda args: self._tool_recall(args.get("query", "")),
             },
-            "web_search": {
-                "description": "Search the web for lightweight factual context.",
-                "args_schema": {"query": "string"},
-                "handler": lambda args: self._tool_search_live(args.get("query", "")),
-            },
             "weather": {
                 "description": "Get a concise weather summary for a location.",
                 "args_schema": {"location": "string"},
                 "handler": lambda args: self._tool_weather_live(args.get("location", "")),
             },
             "read_url": {
-                "description": "Read the text content of a webpage to answer questions.",
+                "description": "Read the text content of a webpage to answer questions. Use this to read full articles and web pages after searching.",
                 "args_schema": {"url": "string"},
                 "handler": lambda args: self._tool_read_url(args.get("url", "")),
+            },
+            "sequential_thinking": {
+                "description": "A tool for dynamic and reflective problem-solving through thoughts. Use this to break down complex problems, formulate hypotheses, or revise previous thoughts before taking actions like web searches. You can do this multiple times.",
+                "args_schema": {"thought": "string", "thoughtNumber": "integer", "nextThoughtNeeded": "boolean"},
+                "handler": lambda args: self._tool_sequential_thinking(args.get("thought", ""), args.get("thoughtNumber", 1), args.get("nextThoughtNeeded", False)),
             },
         }
 
@@ -308,12 +310,19 @@ class Brain:
 
         return f"""{self.system_prompt}
 
-You are running JARVIS's private autonomous agent loop. Decide the next safe action.
-Use tools only when they materially help. Prefer a final answer for simple requests.
-Never invent tool results. Keep thoughts brief and focused on the task.
-Return ONLY one valid JSON object in one of these forms:
+You are JARVIS, an advanced, autonomous deep-research AI assistant.
+When faced with a complex user query, DO NOT answer immediately. Instead, use your `sequential_thinking` tool to:
+1. Break down the problem into logical steps.
+2. Formulate hypotheses about what you need to search for.
+3. Track your thought process (thoughtNumber 1, 2, 3...).
+4. Decide if you need more thoughts (`nextThoughtNeeded`: true).
+
+After thinking, use `search_web` to find relevant information, and then strongly prefer using `read_url` to read the full content of those URLs rather than relying solely on snippets. 
+You must iterate: Think -> Search -> Read -> Think again -> Conclude.
+Never invent tool results. Return ONLY one valid JSON object in one of these forms:
+
 {{"thought":"reasoning for this step","action":"tool_name","args":{{"key":"value"}}}}
-{{"thought":"final conclusion","action":"final","answer":"short user-facing answer"}}
+{{"thought":"final conclusion","action":"final","answer":"comprehensive user-facing answer"}}
 
 Available tools:
 {json.dumps(tool_specs, indent=2)}
@@ -451,10 +460,15 @@ User request: {query}
             text = soup.get_text(separator=' ')
             # Collapse whitespace
             text = re.sub(r'\s+', ' ', text).strip()
-            # Return first 3000 chars to avoid overwhelming the LLM
-            return text[:3000]
+            # Return first 8000 chars to allow deep reading
+            return text[:8000]
         except Exception as e:
             return f"Failed to read URL: {e}"
+
+    def _tool_sequential_thinking(self, thought, thought_number, next_thought_needed):
+        # The agent uses this tool just to 'think' and record its train of thought in the transcript.
+        status = "continue thinking" if next_thought_needed else "ready to act or conclude"
+        return f"Thought #{thought_number} recorded. Status: {status}."
 
     def _truncate(self, text, limit):
         text = str(text or "")

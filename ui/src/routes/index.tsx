@@ -122,6 +122,7 @@ function LoadingShell() {
 
 function CommandDeck() {
   const [connected, setConnected] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const connectingRef = useRef(false);
   const [speaking, setSpeaking] = useState(false);
@@ -203,6 +204,7 @@ function CommandDeck() {
         }
         if (data.type === "transcription" || data.type === "transcript") addLine("user", text);
         if (data.type === "llm_response" || data.type === "response") {
+          setIsProcessing(false);
           setSpeaking(true);
           if (speakingTimeoutRef.current) window.clearTimeout(speakingTimeoutRef.current);
           speakingTimeoutRef.current = window.setTimeout(() => setSpeaking(false), 4500);
@@ -260,20 +262,24 @@ function CommandDeck() {
       setInput("");
 
       if (wsRef.current?.readyState === WebSocket.OPEN) {
+        setIsProcessing(true);
         wsRef.current.send(JSON.stringify({ action: "command", text }));
         return;
       }
 
       try {
+        setIsProcessing(true);
         const response = await fetch("/api/command", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ command: text }),
         });
         const data = await response.json();
+        setIsProcessing(false);
         addLine("agent", data.response ?? "Command completed.");
         refreshAgentStatus();
       } catch {
+        setIsProcessing(false);
         setError("No backend connection available.");
       }
     },
@@ -410,13 +416,34 @@ function CommandDeck() {
             <div className="absolute inset-0 opacity-[0.05] pointer-events-none circuit-grid" />
             <div className="absolute inset-x-0 top-0 h-px bg-hud/50 animate-scan" />
 
-            <div className="w-full flex justify-between text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
+            {isProcessing && (
+              <div className="processing-overlay text-center p-6">
+                <div className="text-warn text-[10px] tracking-[0.3em] uppercase mb-4 animate-pulse-fast">Neural Link Active</div>
+                <div className="text-xl md:text-3xl font-bold uppercase text-foreground processing-text-glow">
+                  Analyzing Directive
+                </div>
+                {agentEvents.length > 0 && (
+                  <div className="mt-6 p-3 bg-background/50 border border-warn/30 max-w-md mx-auto text-xs text-warn truncate">
+                    {agentEvents[agentEvents.length - 1].type === "AGENT_THOUGHT" 
+                      ? `"${agentEvents[agentEvents.length - 1].text}"`
+                      : agentEvents[agentEvents.length - 1].action || "Processing..."}
+                  </div>
+                )}
+                <div className="mt-8 flex items-center justify-center gap-2">
+                  <span className="w-2 h-2 bg-warn rounded-full animate-pulse-fast" style={{ animationDelay: '0ms' }} />
+                  <span className="w-2 h-2 bg-warn rounded-full animate-pulse-fast" style={{ animationDelay: '150ms' }} />
+                  <span className="w-2 h-2 bg-warn rounded-full animate-pulse-fast" style={{ animationDelay: '300ms' }} />
+                </div>
+              </div>
+            )}
+
+            <div className="w-full flex justify-between text-[10px] uppercase tracking-[0.22em] text-muted-foreground relative z-10">
               <span>core // mark local</span>
               <span>{speaking ? "tx" : connected ? "rx" : "idle"}</span>
             </div>
 
-            <div className="relative flex flex-col items-center justify-center py-6">
-              <ReactorVisualizer active={connected} level={audioLevel} />
+            <div className={`relative flex flex-col items-center justify-center py-6 z-10 transition-opacity duration-500 ${isProcessing ? 'opacity-20' : 'opacity-100'}`}>
+              <ReactorVisualizer active={connected} level={audioLevel} thinking={isProcessing} />
               <DualAudioVisualizer
                 userActive={listening && !speaking}
                 jarvisActive={speaking}
@@ -440,10 +467,11 @@ function CommandDeck() {
                 ))}
               </div>
 
-              <div className="command-bar">
+              <div className={`command-bar ${isProcessing ? 'is-disabled' : ''}`}>
                 <ChevronRight className="h-4 w-4 text-hud shrink-0" />
                 <input
                   value={input}
+                  disabled={isProcessing}
                   onChange={(event) => setInput(event.target.value)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter") sendCommand();

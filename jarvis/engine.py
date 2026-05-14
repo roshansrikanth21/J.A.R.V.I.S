@@ -170,16 +170,23 @@ class JarvisEngine:
                     "handler": lambda args: self.actions.open_app(args.get("app_name", "")),
                 },
                 "paste_prompt": {
-                    "description": "Paste a prompt file from the prompts directory into the active window.",
-                    "args_schema": {"prompt_name": "string without .txt"},
-                    "handler": lambda args: self.actions.paste_prompt_file(args.get("prompt_name", "")),
+                    "description": "Paste a prompt file into the active window. Optionally focus a specific app first. Available prompts: analysis/code_review, analysis/security_audit, analysis/ctf_strategy, writing/report_template, writing/email_formal, tools/cursor_context.",
+                    "args_schema": {"prompt_name": "string (name without .txt)", "app_title": "string (optional window title to focus)"},
+                    "handler": lambda args: self.actions.paste_prompt_file(
+                        args.get("prompt_name", ""), app_title=args.get("app_title")
+                    ),
                 },
                 "look_at_screen": {
-                    "description": "Capture and analyze the current screen when visual context is needed.",
+                    "description": "Capture and analyse the current screen using the vision LLM (LLaVA locally or Claude Vision). Use this for full scene understanding — what app is open, what error is shown, etc.",
                     "args_schema": {"question": "string"},
                     "handler": lambda args: self.vision.ask_about_screen(
                         args.get("question", "What is on the screen right now?")
                     ),
+                },
+                "ocr_screen": {
+                    "description": "Fast text extraction from screen using Tesseract OCR. Use this when you just need to read text (code, error messages, URLs) without full scene understanding. Much faster than look_at_screen.",
+                    "args_schema": {},
+                    "handler": lambda args: self.vision.ocr_screen(),
                 },
                 "play_youtube": {
                     "description": "Open YouTube and play a requested video or search query.",
@@ -195,6 +202,21 @@ class JarvisEngine:
                     "description": "Search the internet for up-to-date information, news, vulnerabilities, concepts, or general facts.",
                     "args_schema": {"query": "string"},
                     "handler": lambda args: self.github_tools.search_web(args.get("query", "")),
+                },
+                "read_clipboard": {
+                    "description": "Read the current text from the user's system clipboard.",
+                    "args_schema": {},
+                    "handler": lambda args: self.actions.read_clipboard(),
+                },
+                "close_window": {
+                    "description": "Close an application window on the desktop by specifying part of its title.",
+                    "args_schema": {"title": "string"},
+                    "handler": lambda args: self.actions.close_window(args.get("title", "")),
+                },
+                "run_script": {
+                    "description": "Run a Python script by path. Use this to execute analytical or automation scripts.",
+                    "args_schema": {"path": "string"},
+                    "handler": lambda args: self.actions.run_script(args.get("path", "")),
                 },
             }
         )
@@ -212,7 +234,12 @@ class JarvisEngine:
         if event_type == "AGENT_THOUGHT":
             self.emit_event("status", f"Thinking: {step.get('text', '')[:120]}")
         elif event_type == "AGENT_TOOL_CALL":
-            self.emit_event("status", f"Calling tool: {step.get('action')}")
+            action = step.get('action')
+            if action == "sequential_thinking":
+                thought = step.get('args', {}).get('thought', '')[:120]
+                self.emit_event("status", f"Deep Thinking: {thought}")
+            else:
+                self.emit_event("status", f"Calling tool: {action}")
         elif event_type == "AGENT_TOOL_RESULT":
             self.emit_event("status", f"Tool result: {step.get('observation', '')[:120]}")
         elif event_type == "AGENT_PLAN_UPDATE":

@@ -1,0 +1,29 @@
+Write a professional technical report with the following structure:
+
+# [TITLE]
+
+## Executive Summary
+A 2-3 sentence high-level summary for non-technical stakeholders.
+
+## Background
+Context and motivation for this work.
+
+## Methodology
+Step-by-step process used. Tools, frameworks, and approach.
+
+## Findings
+Detailed results. Use tables and bullet points where appropriate.
+
+## Analysis
+What the findings mean. Patterns, anomalies, insights.
+
+## Recommendations
+Actionable next steps, prioritized by impact.
+
+## Conclusion
+One-paragraph closing summary reinforcing the key takeaway.
+
+---
+Tone: Professional, precise, confident. Avoid jargon unless necessary.
+Format: Markdown. Use headings, tables, code blocks where appropriate.
+Length: As detailed as the subject demands — do not pad or truncate.

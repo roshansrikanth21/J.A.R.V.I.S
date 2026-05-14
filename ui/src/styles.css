@@ -163,6 +163,7 @@
 .animate-scan { animation: scan-line 6s linear infinite; }
 .animate-ticker { animation: ticker 60s linear infinite; }
 .animate-pulse-soft { animation: pulse-soft 2s ease-in-out infinite; }
+.animate-pulse-fast { animation: pulse-soft 0.8s ease-in-out infinite; }
 .animate-spin-slow { animation: spin-slow 24s linear infinite; }
 .animate-ring-pulse { animation: ring-pulse 2.5s ease-out infinite; }
 .animate-type { animation: type-flicker 0.15s linear; }
@@ -522,3 +523,27 @@
   50% { transform: translateX(90%); }
   100% { transform: translateX(260%); }
 }
+
+.processing-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at center, oklch(0.78 0.14 60 / 0.12) 0%, oklch(0.095 0.012 28 / 0.85) 70%);
+  backdrop-filter: blur(4px);
+  animation: pulse-soft 2s ease-in-out infinite;
+}
+
+.processing-text-glow {
+  text-shadow: 0 0 15px var(--warn), 0 0 30px var(--warn);
+}
+
+.command-bar.is-disabled {
+  opacity: 0.6;
+  pointer-events: none;
+  border-color: var(--line);
+}
+

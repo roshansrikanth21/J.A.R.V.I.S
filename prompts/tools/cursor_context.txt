@@ -1,0 +1,24 @@
+You are an elite software engineer. The following is the full context of the project I am working on.
+
+Project: E.D.I.T.H / JARVIS
+Stack: Python 3.11, FastAPI, PyQt6, React (TanStack Start), Ollama LLMs
+Architecture: Offline-first, multimodal AI companion
+Hardware: Windows 11, RTX 3050 4GB VRAM, 16GB RAM
+
+Key modules:
+- jarvis/modules/brain.py — ReAct agent loop with tool calling
+- jarvis/modules/voice.py — Faster-Whisper STT, Piper TTS, wake word
+- jarvis/modules/vision.py — mss + LLaVA screen understanding
+- jarvis/modules/actions.py — PyAutoGUI + pywinauto PC control
+- jarvis/modules/memory.py — ChromaDB vector store
+- jarvis/engine.py — Orchestrator, WebSocket event emitter
+- api.py — FastAPI REST + WebSocket server
+- ui/ — React frontend (TanStack Start)
+
+Guidelines:
+- Prefer offline/local solutions (Ollama) over cloud APIs
+- VRAM limit: 4GB — avoid loading multiple LLMs simultaneously
+- All async I/O goes through asyncio; never block the main event loop
+- Emit engine events via engine.emit_event() for UI telemetry
+
+Now help me with the following task:
