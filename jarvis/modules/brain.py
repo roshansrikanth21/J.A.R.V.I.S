@@ -41,14 +41,10 @@ class Brain:
         context_str = ""
 
         if self.memory:
-            # New enhanced memory recall
-            memories = self.memory.recall(query)
-            if memories:
-                context_str = "\nRelevant past memories:\n"
-                for m in memories:
-                    ts = _dt.datetime.fromtimestamp(m['timestamp'])
-                    time_ago = str(_dt.datetime.now() - ts).split('.')[0]
-                    context_str += f"- [{time_ago} ago] {m['content']} (Importance: {m['importance']:.2f})\n"
+            # Inject enhanced cognitive context (Working Memory + Relevant Episodic)
+            context_str = self.memory.get_context(query)
+            if context_str:
+                context_str = "\n" + context_str + "\n"
 
         if context_override:
             context_str += f"\nAdditional Context:\n{context_override}"
@@ -137,7 +133,11 @@ class Brain:
             if prompt_name:
                 return {"action": "paste_prompt", "args": {"prompt_name": prompt_name}}
 
-        screen_phrases = ("look at screen", "see my screen", "what is on my screen", "analyze my screen")
+        screen_phrases = (
+            "look at screen", "see my screen", "what is on my screen", 
+            "analyze my screen", "scan my screen", "scan the screen",
+            "view my screen", "what am i looking at"
+        )
         if any(phrase in lower for phrase in screen_phrases):
             return {"action": "vision"}
 
@@ -162,6 +162,27 @@ class Brain:
         if "news" in lower and any(word in lower for word in ("get", "latest", "today", "headlines", "show")):
             return {"action": "get_news"}
 
+        if "market" in lower or "price of" in lower:
+            ticker_match = re.search(r"price of ([a-zA-Z\.-]+)", lower)
+            if not ticker_match:
+                ticker_match = re.search(r"market data for ([a-zA-Z\.-]+)", lower)
+            if ticker_match:
+                return {"action": "market_data", "args": {"ticker": ticker_match.group(1).upper()}}
+
+        if "sentiment" in lower or "social scan" in lower or "social media" in lower:
+            topic = text.split("for", 1)[-1].strip() if "for" in lower else text.split("sentiment", 1)[-1].strip()
+            if topic:
+                return {"action": "social_sentiment", "args": {"topic": topic}}
+
+        if "comrade" in lower or "trading terminal" in lower:
+            if "status" in lower or "position" in lower:
+                return {"action": "comrade_status", "args": {}}
+            if "analysis" in lower or "regime" in lower or "setup" in lower:
+                ticker = self._extract_ticker(text) or "^NSEI"
+                return {"action": "comrade_analysis", "args": {"ticker": ticker}}
+            cmd = text.split("comrade", 1)[-1].strip() if "comrade" in lower else text
+            return {"action": "comrade_link", "args": {"command": cmd or "status"}}
+
         for command in ("restart", "shutdown", "logout"):
             if command in lower and any(word in lower for word in ("pc", "computer", "system", "windows")):
                 return {"action": "system_control", "args": {"command": command}}
@@ -178,9 +199,9 @@ class Brain:
         max_steps = max_steps or self.max_agent_steps
         tools = tools or self.default_tools()
         memories = []
+        memories = ""
         if self.memory:
-            m_list = self.memory.recall(query)
-            memories = [f"{m['content']} ({m['importance']:.2f})" for m in m_list]
+            memories = self.memory.get_context(query, n=3)
         transcript = []
 
         for step in range(max_steps):

@@ -39,3 +39,6 @@ duckduckgo-search
 python-dotenv
 requests
 aiohttp
+yfinance
+beautifulsoup4
+praw

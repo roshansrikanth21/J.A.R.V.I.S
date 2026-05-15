@@ -74,11 +74,14 @@ class VisionSystem:
 
     def _ask_llava(self, b64_image, question):
         """Sends a screenshot to the local LLaVA model via Ollama."""
-        ollama_url = self.config.get("ollama_server", "http://localhost:11434") + "/api/generate"
-        print("[JARVIS] Analyzing screen with local LLaVA...")
+        server_url = self.config.get("ollama_server", "http://localhost:11434")
+        generate_url = f"{server_url}/api/generate"
+        
+        print(f"[JARVIS] Analyzing screen with local LLaVA at {server_url}...")
         try:
+            # First, a quick connectivity check if we haven't already
             response = _requests.post(
-                ollama_url,
+                generate_url,
                 json={
                     "model": "llava:7b",
                     "prompt": question,
@@ -89,7 +92,11 @@ class VisionSystem:
             )
             if response.status_code == 200:
                 return response.json().get("response", "")
-            return f"LLaVA error {response.status_code}: {response.text[:200]}"
+            elif response.status_code == 404:
+                return "The vision model 'llava:7b' was not found in Ollama. Please run 'ollama pull llava' in your terminal."
+            return f"Ollama error {response.status_code}: {response.text[:200]}"
+        except _requests.exceptions.ConnectionError:
+            return "Could not connect to Ollama. Please ensure Ollama is running (ollama serve) and accessible at " + server_url
         except Exception as e:
             return f"Local vision analysis failed: {e}"
 
@@ -139,15 +146,22 @@ class VisionSystem:
         Routing:
           primary_llm == 'local'  ->  LLaVA via Ollama (VRAM-aware)
           primary_llm == 'cloud'  ->  Claude Vision API
-          fast_ocr flag set       ->  Tesseract OCR only (no LLM)
         """
-        _, b64_image = self.capture_screen()
+        try:
+            img, b64_image = self.capture_screen()
+        except Exception as e:
+            logger.error(f"Vision capture exception: {e}")
+            return f"I encountered an error while trying to capture the screen: {e}"
+
         if not b64_image:
-            return "I could not capture the screen."
+            return "I could not capture the screen. Please ensure the app has screen recording permissions."
 
         primary_llm = self.config.get("primary_llm", "local")
 
         if primary_llm == "local":
-            return self._ask_llava(b64_image, question)
+            res = self._ask_llava(b64_image, question)
+            if "model not found" in res.lower() or "not found" in res.lower():
+                return "The local vision model 'llava:7b' is not installed in Ollama. Please run 'ollama pull llava' in your terminal."
+            return res
         else:
             return self._ask_claude_vision(b64_image, question)

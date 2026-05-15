@@ -1,80 +1,51 @@
+"""
+JARVIS Memory Module Bridge
+Connects the core engine to the Enhanced Memory System.
+"""
 import os
-import time
-try:
-    import chromadb
-    from sentence_transformers import SentenceTransformer
-except ImportError:
-    pass
+import logging
+from jarvis.modules.memory.enhanced_memory import JarvisMemoryManager
+
+logger = logging.getLogger(__name__)
 
 class MemorySystem:
-    def __init__(self, config):
-        self.config = config.get("memory", {})
-        db_path = self.config.get("db_path", "./memory/chroma_db")
-        model_name = self.config.get("embedding_model", "all-MiniLM-L6-v2")
-        
-        os.makedirs(db_path, exist_ok=True)
-        print("[JARVIS] Initializing memory embeddings...")
-        
-        try:
-            import chromadb.config
-            self.embed_model = SentenceTransformer(model_name)
-            self.client = chromadb.PersistentClient(
-                path=db_path,
-                settings=chromadb.config.Settings(anonymized_telemetry=False)
-            )
-            self.collection = self.client.get_or_create_collection("jarvis_memories")
-        except Exception as e:
-            print(f"[WARN] Memory init failed: {e}")
-            self.collection = None
+    """
+    Bridge class for compatibility with existing JARVIS core code.
+    Wraps the JarvisMemoryManager (v1.1) which handles neural classification,
+    associative graphs, and proactive modeling.
+    """
+    def __init__(self, config=None):
+        # We use a singleton manager to ensure consistency across the app
+        self.manager = JarvisMemoryManager()
+        logger.info("[JARVIS] Enhanced Memory System Bridge initialized.")
 
     def remember(self, text, metadata=None):
         """Stores a string of text in the long-term vector database."""
-        if not self.collection:
-            return
-            
-        if metadata is None:
-            metadata = {}
-        metadata["timestamp"] = str(time.time())
+        # Note: The new system handles importance and intent auto-detection
+        event_type = "conversation"
+        if metadata and "event_type" in metadata:
+            event_type = metadata["event_type"]
         
-        try:
-            embedding = self.embed_model.encode(text).tolist()
-            doc_id = str(time.time_ns())
-            
-            self.collection.add(
-                embeddings=[embedding],
-                documents=[text],
-                ids=[doc_id],
-                metadatas=[metadata]
-            )
-            print(f"[JARVIS] Memorized: {text[:30]}...")
-        except Exception as e:
-            print(f"[WARN] Failed to remember: {e}")
+        return self.manager.remember(text, event_type=event_type)
 
     def recall(self, query, n_results=5):
         """Retrieves top n_results most relevant memories based on the query."""
-        if not self.collection or not query:
-            return []
-            
-        try:
-            q_embed = self.embed_model.encode(query).tolist()
-            results = self.collection.query(
-                query_embeddings=[q_embed],
-                n_results=n_results
-            )
-            
-            if results and results.get("documents") and len(results["documents"]) > 0:
-                return results["documents"][0]
-            return []
-        except Exception as e:
-            print(f"[WARN] Recall failed: {e}")
-            return []
+        return self.manager.recall(query, n_results=n_results)
+
+    def get_context(self, query, n=5):
+        """Returns a pre-formatted context string for LLM injection."""
+        return self.manager.get_context(query, n)
 
     def stats(self):
-        """Returns lightweight memory health information for the UI."""
-        if not self.collection:
-            return {"available": False, "count": 0}
-
-        try:
-            return {"available": True, "count": self.collection.count()}
-        except Exception as e:
-            return {"available": False, "count": 0, "error": str(e)}
+        """Returns memory health information for the UI."""
+        raw_stats = self.manager.get_stats()
+        return {
+            "available": True,
+            "count": raw_stats["total_entries"],
+            "working_size": raw_stats["working_size"],
+            "graph_edges": raw_stats["graph_edges"]
+        }
+    
+    def get_proactive_suggestion(self):
+        """Polls for any proactive system suggestions."""
+        return self.manager.get_proactive_suggestion()

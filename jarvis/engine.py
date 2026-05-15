@@ -3,6 +3,8 @@ from jarvis.modules.brain import Brain
 from jarvis.modules.memory.enhanced_memory import JarvisMemoryManager
 from jarvis.modules.actions import ActionEngine
 from jarvis.modules.vision import VisionSystem
+from jarvis.modules.intelligence import JarvisIntelligence
+from jarvis.modules.comrade_bridge import ComradeBridge
 from jarvis.tools.system_tools import GitHubTools
 import threading
 import time
@@ -16,6 +18,8 @@ class JarvisEngine:
         self.memory = JarvisMemoryManager()
         self.voice = VoiceSystem(config)
         self.vision = VisionSystem(config)
+        self.comrade = ComradeBridge(config)
+        self.intelligence = JarvisIntelligence(config, self.comrade)
         self.actions = ActionEngine(config)
         self.brain = Brain(config, self.memory)
         self.github_tools = GitHubTools(self.voice)
@@ -108,6 +112,16 @@ class JarvisEngine:
             result = self.github_tools.play_youtube(query)
             response_text = result
             
+        elif action == "market_data":
+            ticker = intent.get("args", {}).get("ticker", "")
+            result = self.intelligence.get_market_price(ticker)
+            response_text = f"Market data for {ticker}: {result['price']} {result['currency']}. Recommendation: {result['recommendation']}"
+            
+        elif action == "social_sentiment":
+            topic = intent.get("args", {}).get("topic", "")
+            result = self._tool_social_sentiment({"topic": topic})
+            response_text = f"Social sentiment for {topic} is {result['sentiment']}. Scanned {result['sources']['reddit_count']} Reddit and {result['sources']['x_count']} X posts."
+
         elif action == "get_news":
             self.emit_event("status", "Fetching news...")
             result = self.github_tools.get_news()
@@ -184,7 +198,7 @@ class JarvisEngine:
                     ),
                 },
                 "look_at_screen": {
-                    "description": "Capture and analyse the current screen using the vision LLM (LLaVA locally or Claude Vision). Use this for full scene understanding — what app is open, what error is shown, etc.",
+                    "description": "Capture, scan, and analyse the current screen using the vision LLM (LLaVA locally or Claude Vision). Use this for full scene understanding — what app is open, what is on the desk, or what error is shown.",
                     "args_schema": {"question": "string"},
                     "handler": lambda args: self.vision.ask_about_screen(
                         args.get("question", "What is on the screen right now?")
@@ -225,6 +239,31 @@ class JarvisEngine:
                     "args_schema": {"path": "string"},
                     "handler": lambda args: self.actions.run_script(args.get("path", "")),
                 },
+                "market_data": {
+                    "description": "Get real-time price and summary for a stock or crypto ticker (e.g. AAPL, TSLA, BTC-USD). Use this for investment analysis.",
+                    "args_schema": {"ticker": "string"},
+                    "handler": lambda args: self.intelligence.get_market_price(args.get("ticker", "")),
+                },
+                "social_sentiment": {
+                    "description": "Scan X (Twitter) and Reddit for sentiment and news about a specific topic or asset.",
+                    "args_schema": {"topic": "string"},
+                    "handler": self._tool_social_sentiment,
+                },
+                "comrade_status": {
+                    "description": "Check the status of the COMRADE trading terminal, including connection health and active positions.",
+                    "args_schema": {},
+                    "handler": lambda args: self.comrade.get_status(),
+                },
+                "comrade_analysis": {
+                    "description": "Request a deep technical analysis or 'Regime Analysis' from COMRADE for a specific ticker (e.g. NIFTY, ^NSEI).",
+                    "args_schema": {"ticker": "string"},
+                    "handler": lambda args: self.comrade.get_analysis(args.get("ticker", "^NSEI")),
+                },
+                "comrade_link": {
+                    "description": "General bridge to the COMRADE trading terminal. Use this for execution or specific commands not covered by other tools.",
+                    "args_schema": {"command": "string", "args": "object"},
+                    "handler": lambda args: self.comrade.send_command(args.get("command", ""), args.get("args", {})),
+                },
             }
         )
         return tools
@@ -256,6 +295,30 @@ class JarvisEngine:
             self.emit_event("agent_tool", step)
             if "action" in step and "observation" in step:
                 self.emit_event("status", f"Tool: {step.get('action')} -> {step.get('observation', '')[:120]}")
+
+    def _tool_social_sentiment(self, args):
+        topic = args.get("topic", "")
+        reddit = self.intelligence.search_reddit(topic)
+        x_posts = self.intelligence.search_x(topic)
+        
+        all_text = [r['snippet'] for r in reddit] + [x['snippet'] for x in x_posts]
+        sentiment = self.intelligence.analyze_sentiment(all_text)
+        
+        result = {
+            "topic": topic,
+            "sentiment": sentiment,
+            "sources": {
+                "reddit_count": len(reddit),
+                "x_count": len(x_posts)
+            },
+            "top_reddit": reddit[0]['title'] if reddit else "None",
+            "top_x": x_posts[0]['title'] if x_posts else "None"
+        }
+        return result
+
+    def _tool_comrade_bridge(self, args):
+        command = args.get("command", "")
+        return self.comrade.send_command(command)
 
     def get_agent_status(self):
         """Returns UI-facing agent capability and runtime state."""
